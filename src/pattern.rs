@@ -1,0 +1,95 @@
+//! Pattern expansion and literal prefix extraction.
+//!
+//! User-facing patterns use `<HOST>` as a placeholder for the IP capture group.
+//! This module expands `<HOST>` into a regex that matches both IPv4 and IPv6
+//! addresses, and extracts literal prefixes for Aho-Corasick pre-filtering.
+
+use crate::error::{Error, Result};
+
+/// Combined host capture group: matches IPv4 or IPv6 addresses.
+const HOST_CAPTURE: &str = r"(?P<host>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[0-9a-fA-F:]{2,39})";
+
+/// The placeholder token in user patterns.
+const HOST_TAG: &str = "<HOST>";
+
+/// Expand `<HOST>` in a user pattern into the IP capture group regex.
+///
+/// Returns an error if the pattern contains zero or more than one `<HOST>`.
+pub fn expand_host(pattern: &str) -> Result<String> {
+    let count = pattern.matches(HOST_TAG).count();
+    if count == 0 {
+        return Err(Error::config(format!(
+            "pattern missing <HOST> placeholder: {pattern}"
+        )));
+    }
+    if count > 1 {
+        return Err(Error::config(format!(
+            "pattern has multiple <HOST> placeholders ({count}): {pattern}"
+        )));
+    }
+    Ok(pattern.replace(HOST_TAG, HOST_CAPTURE))
+}
+
+/// Extract the literal prefix before `<HOST>` for Aho-Corasick pre-filtering.
+///
+/// Walks backwards from the `<HOST>` position to find the longest substring
+/// that contains no regex metacharacters. Returns `None` if no usable literal
+/// prefix exists (e.g. pattern starts with `<HOST>`).
+pub fn literal_prefix(pattern: &str) -> Option<String> {
+    let host_pos = pattern.find(HOST_TAG)?;
+    let before = &pattern[..host_pos];
+    if before.is_empty() {
+        return None;
+    }
+
+    // Walk backwards from the end of `before` to find a literal run.
+    // Stop at regex metacharacters.
+    let meta_chars = &[
+        '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$',
+    ];
+    let literal_start = before
+        .rfind(|c: char| meta_chars.contains(&c))
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+
+    let prefix = &before[literal_start..];
+    if prefix.is_empty() {
+        // Try the chunk before the last metachar sequence as a fallback.
+        // For patterns like `sshd\[\d+\]: Failed password for .* from <HOST>`,
+        // we want " from " as the prefix.
+        // Actually, let's extract the longest literal segment before <HOST>.
+        extract_longest_literal(before)
+    } else {
+        Some(prefix.to_string())
+    }
+}
+
+/// Find the longest contiguous literal (no metacharacters) segment in `s`.
+fn extract_longest_literal(s: &str) -> Option<String> {
+    let meta_chars = &[
+        '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$',
+    ];
+    let mut best = "";
+    let mut current_start = 0;
+
+    for (i, c) in s.char_indices() {
+        if meta_chars.contains(&c) {
+            let segment = &s[current_start..i];
+            if segment.len() > best.len() {
+                best = segment;
+            }
+            current_start = i + c.len_utf8();
+        }
+    }
+    // Check the last segment
+    let segment = &s[current_start..];
+    if segment.len() > best.len() {
+        best = segment;
+    }
+
+    if best.len() >= 3 {
+        Some(best.to_string())
+    } else {
+        None
+    }
+}

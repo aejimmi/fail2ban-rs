@@ -1,0 +1,11 @@
+Jan 15 10:30:00 server sshd[1234]: Accepted publickey for admin from 10.0.0.1 port 22 ssh2
+Jan 15 10:30:01 server sshd[1235]: Failed password for root from 192.168.1.100 port 22 ssh2
+Jan 15 10:30:02 server sshd[1236]: Failed password for root from 192.168.1.100 port 22 ssh2
+Jan 15 10:30:03 server sshd[1237]: Failed password for root from 192.168.1.100 port 22 ssh2
+Jan 15 10:30:04 server kernel: CPU0: Core temperature above threshold
+Jan 15 10:30:05 server sshd[1238]: Invalid user admin from 192.168.1.100 port 22 ssh2
+Jan 15 10:30:06 server sshd[1239]: Failed password for root from 192.168.1.100 port 22 ssh2
+Jan 15 10:30:07 server sshd[1240]: Accepted password for user from 10.0.0.2 port 22 ssh2
+Jan 15 10:30:10 server sshd[1241]: Failed password for root from 10.20.30.40 port 22 ssh2
+Jan 15 10:30:11 server sshd[1242]: Failed password for nobody from 10.20.30.40 port 22 ssh2
+Jan 15 10:30:20 server sshd[1243]: Connection closed by authenticating user root 172.16.0.5 port 22

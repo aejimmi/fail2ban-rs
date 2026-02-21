@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: Build ${{ matrix.os_arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os_arch: linux-amd64
+          - target: aarch64-unknown-linux-gnu
+            os_arch: linux-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "release-${{ matrix.target }}"
+
+      - name: Install cross-compilation tools (arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Strip binary
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/fail2ban-rs
+          else
+            strip target/${{ matrix.target }}/release/fail2ban-rs
+          fi
+
+      - name: Package
+        run: |
+          ARTIFACT="fail2ban-rs-${VERSION}-${{ matrix.os_arch }}"
+          mkdir -p dist/${ARTIFACT}
+          cp target/${{ matrix.target }}/release/fail2ban-rs dist/${ARTIFACT}/
+          cp dist/fail2ban-rs.service dist/${ARTIFACT}/
+          cp config/default.toml dist/${ARTIFACT}/config.toml
+          cp LICENSE dist/${ARTIFACT}/ 2>/dev/null || true
+          cp README.md dist/${ARTIFACT}/ 2>/dev/null || true
+          cd dist
+          tar -czf ${ARTIFACT}.tar.gz ${ARTIFACT}
+          sha256sum ${ARTIFACT}.tar.gz > ${ARTIFACT}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os_arch }}
+          path: dist/fail2ban-rs-${{ env.VERSION }}-${{ matrix.os_arch }}.tar.gz*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
