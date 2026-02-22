@@ -344,14 +344,22 @@ async fn two_jails_different_backends_dispatch_correctly() {
 
 #[test]
 fn create_backend_nftables() {
-    let backend = create_backend(&crate::config::Backend::Nftables);
-    assert_eq!(backend.name(), "nftables");
+    match create_backend(&crate::config::Backend::Nftables) {
+        Ok(backend) => assert_eq!(backend.name(), "nftables"),
+        Err(_) => {
+            // Binary not found on this system (e.g. macOS); skip.
+        }
+    }
 }
 
 #[test]
 fn create_backend_iptables() {
-    let backend = create_backend(&crate::config::Backend::Iptables);
-    assert_eq!(backend.name(), "iptables");
+    match create_backend(&crate::config::Backend::Iptables) {
+        Ok(backend) => assert_eq!(backend.name(), "iptables"),
+        Err(_) => {
+            // Binaries not found on this system (e.g. macOS); skip.
+        }
+    }
 }
 
 #[test]
@@ -359,7 +367,8 @@ fn create_backend_script() {
     let backend = create_backend(&crate::config::Backend::Script {
         ban_cmd: "echo ban <IP>".to_string(),
         unban_cmd: "echo unban <IP>".to_string(),
-    });
+    })
+    .expect("script backend should always succeed");
     assert_eq!(backend.name(), "script");
 }
 

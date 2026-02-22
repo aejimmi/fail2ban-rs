@@ -5,14 +5,14 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::config::{Backend, JailConfig};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::executor_iptables::IptablesBackend;
 use crate::executor_nftables::NftablesBackend;
 use crate::executor_script::ScriptBackend;
@@ -68,13 +68,41 @@ pub trait FirewallBackend: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// Known system directories to search for firewall binaries.
+const SYSTEM_DIRS: &[&str] = &["/usr/sbin", "/sbin", "/usr/bin", "/bin"];
+
+/// Resolve a binary name to an absolute path in known system directories.
+///
+/// Searches `/usr/sbin`, `/sbin`, `/usr/bin`, `/bin` in order, returning
+/// the first path where the file exists. Fails early if the binary is not
+/// found, preventing PATH-based resolution at runtime.
+pub fn resolve_binary(name: &str) -> Result<PathBuf> {
+    for dir in SYSTEM_DIRS {
+        let path = Path::new(dir).join(name);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(Error::firewall(format!(
+        "binary '{name}' not found in {}",
+        SYSTEM_DIRS.join(", ")
+    )))
+}
+
 /// Create the appropriate firewall backend from config.
-pub fn create_backend(backend: &Backend) -> Box<dyn FirewallBackend> {
+pub fn create_backend(backend: &Backend) -> Result<Box<dyn FirewallBackend>> {
     match backend {
-        Backend::Nftables => Box::new(NftablesBackend::new()),
-        Backend::Iptables => Box::new(IptablesBackend::new()),
+        Backend::Nftables => {
+            let nft_path = resolve_binary("nft")?;
+            Ok(Box::new(NftablesBackend::new(nft_path)))
+        }
+        Backend::Iptables => {
+            let iptables_path = resolve_binary("iptables")?;
+            let ip6tables_path = resolve_binary("ip6tables")?;
+            Ok(Box::new(IptablesBackend::new(iptables_path, ip6tables_path)))
+        }
         Backend::Script { ban_cmd, unban_cmd } => {
-            Box::new(ScriptBackend::new(ban_cmd.clone(), unban_cmd.clone()))
+            Ok(Box::new(ScriptBackend::new(ban_cmd.clone(), unban_cmd.clone())))
         }
     }
 }
@@ -82,11 +110,11 @@ pub fn create_backend(backend: &Backend) -> Box<dyn FirewallBackend> {
 /// Create per-jail firewall backends from jail configurations.
 pub fn create_backends(
     jails: &HashMap<String, JailConfig>,
-) -> HashMap<String, Box<dyn FirewallBackend>> {
+) -> Result<HashMap<String, Box<dyn FirewallBackend>>> {
     jails
         .iter()
         .filter(|(_, cfg)| cfg.enabled)
-        .map(|(name, cfg)| (name.clone(), create_backend(&cfg.backend)))
+        .map(|(name, cfg)| Ok((name.clone(), create_backend(&cfg.backend)?)))
         .collect()
 }
 

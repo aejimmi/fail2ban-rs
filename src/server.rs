@@ -53,7 +53,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
         .filter(|(_, j)| j.enabled)
         .map(|(name, cfg)| (name.clone(), cfg.clone()))
         .collect();
-    let backends = executor::create_backends(&jail_configs);
+    let backends = executor::create_backends(&jail_configs)?;
 
     // Restore bans in the firewall (directly via backends, before executor owns them).
     let now = chrono::Utc::now().timestamp();

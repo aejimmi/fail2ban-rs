@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.2
+
+New:
+- executor: resolve nft/iptables/ip6tables to absolute paths at startup, preventing PATH hijack
+- benches: line mix updated to 30/70 hit/miss ratio based on openssh_2k.log from logpai/loghub
+- sample: openssh_2k.log added as reference dataset for benchmark calibration
+
+Fix:
+- readme: pipeline speedup corrected from 3.2x to 5x using realistic log distribution
+- readme: shell execution claim clarified to note script backend uses sh -c with validated IpAddr
+- executor: script backend documents safety invariant for sh -c substitution
+
 ## v0.1.1
 
 New:

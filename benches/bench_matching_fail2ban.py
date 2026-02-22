@@ -2,7 +2,7 @@
 """
 Equivalent matching benchmark in Python — for comparison with fail2ban-rs.
 
-Uses the same sshd regex patterns and the same log lines from sample.log.
+Uses the same sshd regex patterns and the same log line patterns.
 This mirrors what fail2ban's filter engine does internally: loop over
 compiled regexes, call re.search(), extract the IP.
 
@@ -31,7 +31,7 @@ SSHD_PATTERNS = [
 DATE_RE = re.compile(r'(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})')
 
 # ---------------------------------------------------------------------------
-# Same real log lines from sample.log
+# Same real log line patterns
 # ---------------------------------------------------------------------------
 
 HIT_INVALID_USER = (
@@ -113,17 +113,18 @@ def main():
     bench_one("miss_cron", pipeline, MISS_CRON, n)
 
     # Mixed workload — same ratio as the Rust benchmark.
+    # ~30% hits, ~70% near-misses — mirrors openssh_2k.log (logpai/loghub).
     lines = [
         HIT_CONN_CLOSED_AUTH,
-        HIT_CONN_CLOSED_AUTH,
-        HIT_CONN_CLOSED_AUTH,
         HIT_INVALID_USER,
-        HIT_INVALID_USER,
-        MISS_CRON,
+        HIT_CONN_CLOSED_AUTH,
+        MISS_CONN_CLOSED_INVALID,
         MISS_CONN_CLOSED_INVALID,
         MISS_CONN_CLOSED_INVALID,
         MISS_CONN_RESET,
-        HIT_CONN_CLOSED_AUTH,
+        MISS_CONN_RESET,
+        MISS_CONN_CLOSED_INVALID,
+        MISS_CONN_RESET,
     ]
     elapsed = timeit.timeit(
         lambda: [pipeline(l) for l in lines], number=n // 10

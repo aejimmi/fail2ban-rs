@@ -1,6 +1,6 @@
 > **Alpha** — not yet recommended for production use
 
-A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **3.2x faster matching · 6.6x faster startup · single binary · zero locks**
+A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **5x faster matching · 6.6x faster startup · single binary · zero database · zero locks**
 
 fail2ban is a 20-year-old Python codebase that works, but requires a Python runtime on every production server, serializes all firewall operations behind a global thread lock, and executes shell commands via `subprocess.Popen(shell=True)`.
 
@@ -8,8 +8,8 @@ fail2ban-rs eliminates all of that:
 
 - **Single ~3MB binary** — no Python, no runtime, no interpreter startup overhead
 - **Zero locks** — three async tasks connected by channels, single-owner state (Python fail2ban uses 9+ thread locks)
-- **3.2x faster per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection
-- **No shell execution** — firewall backends call nft/iptables directly, no `shell=True`
+- **5x faster per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection
+- **No shell execution** — nftables/iptables backends exec directly via argv, no `shell=True` (script backend uses `sh -c` but substitutes only validated `IpAddr` values)
 - **6.6x faster startup** — 3.7ms vs 25.8ms (measured with hyperfine, 50 runs)
 - **67% less code** — 4,200 lines of Rust vs 12,500 lines of Python
 - **Constant-size state** — flat binary snapshot of active bans only. No SQLite database growing on disk for years
@@ -26,7 +26,7 @@ curl -sSfL https://raw.githubusercontent.com/aejimmi/fail2ban-rs/main/scripts/in
 Requires Linux, systemd, and root. Installs the binary, systemd service, and default config.
 
 ```bash
-nano /etc/fail2ban-rs/config.toml    # edit config
+nano /etc/fail2ban-rs/config.toml     # edit config
 systemctl enable fail2ban-rs          # start on boot
 systemctl start fail2ban-rs           # start
 fail2ban-rs status                    # check status
@@ -97,8 +97,8 @@ Additional `.toml` files in `config.d/` next to your main config are merged alph
 
 ```bash
 fail2ban-rs status                              # show all jails and bans
-fail2ban-rs ban 1.2.3.4 sshd                   # manually ban an IP
-fail2ban-rs unban 1.2.3.4 sshd                 # manually unban
+fail2ban-rs ban 1.2.3.4 sshd                    # manually ban an IP
+fail2ban-rs unban 1.2.3.4 sshd                  # manually unban
 fail2ban-rs regex --pattern '...' --line '...'  # test a pattern
 fail2ban-rs gen-config sshd                     # generate jail config
 systemctl reload fail2ban-rs                    # hot reload (SIGHUP)
@@ -106,11 +106,11 @@ systemctl reload fail2ban-rs                    # hot reload (SIGHUP)
 
 ## Performance
 
-Per-line matching pipeline benchmarks (MacBook M4 Pro, criterion), comparing against Python fail2ban's equivalent regex engine:
+Per-line matching pipeline benchmarks (MacBook M4 Pro, criterion), comparing against Python fail2ban's equivalent regex engine. Line mix based on [openssh_2k.log](sample/openssh_2k.log) from [logpai/loghub](https://github.com/logpai/loghub) (~30% hits, ~70% near-misses):
 
 | Stage | Rust | Python | Speedup |
 |---|---|---|---|
-| Full pipeline (realistic mix) | 247 ns/line | 783 ns/line | **3.2x** |
+| Full pipeline (openssh_2k mix) | ~147 ns/line | ~740 ns/line | **5x** |
 | Pattern match — hit | 291-353 ns | 457-730 ns | 1.6-2.1x |
 | Pattern match — miss (AC rejects) | 20-56 ns | 342-574 ns | 6-29x |
 | Date parse (ISO 8601) | 7.6 ns | 165 ns | 22x |

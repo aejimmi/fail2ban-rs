@@ -1,7 +1,7 @@
 //! Criterion benchmarks for the matching pipeline.
 //!
 //! Measures per-line nanoseconds for each code path through
-//! `JailMatcher::try_match()` using real log lines from sample.log.
+//! `JailMatcher::try_match()` using real log line patterns.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
@@ -9,7 +9,7 @@ use fail2ban_rs::date::{DateFormat, DateParser};
 use fail2ban_rs::matcher::JailMatcher;
 
 // ---------------------------------------------------------------------------
-// Real lines from sample.log — each exercises a different code path.
+// Real line patterns — each exercises a different code path.
 // ---------------------------------------------------------------------------
 
 /// Matches sshd pattern 2: "Invalid user .* from <HOST>"
@@ -102,19 +102,19 @@ fn bench_full_pipeline(c: &mut Criterion) {
     let matcher = sshd_matcher();
     let parser = DateParser::new(DateFormat::Iso8601).expect("iso8601 parser");
 
-    // Realistic mix: ~60% auth closes, ~20% invalid user, ~10% cron,
-    // ~10% near-misses — mirrors the ratio in sample.log.
+    // Realistic mix: ~30% hits, ~70% near-misses — mirrors the line
+    // distribution in openssh_2k.log (logpai/loghub OpenSSH dataset).
     let lines: Vec<&str> = vec![
         HIT_CONN_CLOSED_AUTH,
-        HIT_CONN_CLOSED_AUTH,
-        HIT_CONN_CLOSED_AUTH,
         HIT_INVALID_USER,
-        HIT_INVALID_USER,
-        MISS_CRON,
+        HIT_CONN_CLOSED_AUTH,
+        MISS_CONN_CLOSED_INVALID,
         MISS_CONN_CLOSED_INVALID,
         MISS_CONN_CLOSED_INVALID,
         MISS_CONN_RESET,
-        HIT_CONN_CLOSED_AUTH,
+        MISS_CONN_RESET,
+        MISS_CONN_CLOSED_INVALID,
+        MISS_CONN_RESET,
     ];
 
     c.bench_function("pipeline_mixed_10_lines", |b| {

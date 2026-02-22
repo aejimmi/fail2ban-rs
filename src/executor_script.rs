@@ -25,6 +25,9 @@ impl ScriptBackend {
             .replace("<JAIL>", jail)
     }
 
+    /// Run a command via `sh -c`. This uses shell execution, but is safe
+    /// because `ip` is a validated `IpAddr` (cannot contain shell metacharacters)
+    /// and `jail` is validated at config load time.
     async fn run_cmd(cmd_line: &str) -> Result<()> {
         let output = tokio::process::Command::new("sh")
             .args(["-c", cmd_line])

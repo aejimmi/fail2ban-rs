@@ -1,21 +1,23 @@
 //! Nftables firewall backend.
 
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 use crate::executor::FirewallBackend;
 
-/// Nftables backend — uses `nft` command.
-#[derive(Default)]
-pub struct NftablesBackend;
+/// Nftables backend — uses `nft` command resolved at startup.
+pub struct NftablesBackend {
+    nft_path: PathBuf,
+}
 
 impl NftablesBackend {
-    pub fn new() -> Self {
-        Self
+    pub fn new(nft_path: PathBuf) -> Self {
+        Self { nft_path }
     }
 
     async fn run_nft(&self, args: &[&str]) -> Result<()> {
-        let output = tokio::process::Command::new("nft")
+        let output = tokio::process::Command::new(&self.nft_path)
             .args(args)
             .output()
             .await
@@ -139,7 +141,7 @@ impl FirewallBackend for NftablesBackend {
 
     async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
         let set_name = format!("f2b-{jail}");
-        let output = tokio::process::Command::new("nft")
+        let output = tokio::process::Command::new(&self.nft_path)
             .args(["list", "set", "inet", "fail2ban-rs", &set_name])
             .output()
             .await
