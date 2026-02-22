@@ -99,11 +99,15 @@ pub fn create_backend(backend: &Backend) -> Result<Box<dyn FirewallBackend>> {
         Backend::Iptables => {
             let iptables_path = resolve_binary("iptables")?;
             let ip6tables_path = resolve_binary("ip6tables")?;
-            Ok(Box::new(IptablesBackend::new(iptables_path, ip6tables_path)))
+            Ok(Box::new(IptablesBackend::new(
+                iptables_path,
+                ip6tables_path,
+            )))
         }
-        Backend::Script { ban_cmd, unban_cmd } => {
-            Ok(Box::new(ScriptBackend::new(ban_cmd.clone(), unban_cmd.clone())))
-        }
+        Backend::Script { ban_cmd, unban_cmd } => Ok(Box::new(ScriptBackend::new(
+            ban_cmd.clone(),
+            unban_cmd.clone(),
+        ))),
     }
 }
 
