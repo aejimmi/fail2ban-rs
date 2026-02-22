@@ -1,5 +1,3 @@
-> **Alpha** — not yet recommended for production use
-
 A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **5x faster matching · 6.6x faster startup · single binary · zero database · zero locks**
 
 fail2ban is a 20-year-old Python codebase that works, but requires a Python runtime on every production server, serializes all firewall operations behind a global thread lock, and executes shell commands via `subprocess.Popen(shell=True)`.
