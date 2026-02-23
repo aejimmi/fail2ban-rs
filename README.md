@@ -26,6 +26,12 @@ Requires Linux and systemd. Installs the binary, systemd service, and default co
 curl -sSfL https://raw.githubusercontent.com/aejimmi/fail2ban-rs/main/scripts/install.sh | bash
 ```
 
+Or install just the binary from crates.io:
+
+```bash
+cargo install fail2ban-rs
+```
+
 ```bash
 nano /etc/fail2ban-rs/config.toml     # edit config
 systemctl enable fail2ban-rs          # start on boot
@@ -156,7 +162,7 @@ cargo test
 
 ## Roadmap
 
-- `cargo install fail2ban-rs` / `apt install` — additional distribution channels
+- `apt install` — additional distribution channels
 - Plugin-style filters and actions — Cloudflare, AbuseIPDB, Slack integrations as config files
 - Threat feed blocking — import IP blocklists and block known attackers proactively
 - Cross-server ban sharing — lightweight registry so one node's detection blocks across the cluster
