@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.0 
+
+fail2ban-rs runs in production
+
+New:
+- cli: list-bans outputs a human-readable table sorted by expiry with relative time remaining
+- cli: list-bans --json flag for JSONL output with jail-first field ordering
+
 ## v0.1.3
 
 - cli: dry-run output shows jail config, threshold, ban count, and per-IP remaining failures

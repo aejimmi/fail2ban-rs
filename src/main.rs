@@ -50,7 +50,11 @@ enum Command {
     Status,
 
     /// List active bans
-    ListBans,
+    ListBans {
+        /// Output as JSONL (one JSON object per line)
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Show daemon statistics
     Stats,
@@ -128,13 +132,17 @@ async fn main() -> Result<()> {
             print_response(&response);
         }
 
-        Command::ListBans => {
+        Command::ListBans { json } => {
             let config =
                 Config::from_file(&cli.config).context("loading config for socket path")?;
             let response = control::send_request(&config.global.socket_path, &Request::ListBans)
                 .await
                 .context("connecting to daemon")?;
-            print_response(&response);
+            if json {
+                print_bans_jsonl(&response);
+            } else {
+                print_bans_table(&response);
+            }
         }
 
         Command::Stats => {
@@ -309,6 +317,120 @@ fn init_tracing(level: Option<&str>) {
         .with_env_filter(env_filter)
         .with_target(false)
         .init();
+}
+
+fn format_relative(remaining_secs: i64) -> String {
+    if remaining_secs <= 0 {
+        return "expired".to_string();
+    }
+    let hours = remaining_secs / 3600;
+    let mins = (remaining_secs % 3600) / 60;
+    match hours {
+        0 => format!("{mins}m remaining"),
+        _ => format!("{hours}h {mins}m remaining"),
+    }
+}
+
+fn print_bans_table(response: &Response) {
+    match response {
+        Response::Error { message } => {
+            eprintln!("Error: {message}");
+            std::process::exit(1);
+        }
+        Response::Ok { data: None, .. } => {
+            println!("No active bans.");
+        }
+        Response::Ok {
+            data: Some(data), ..
+        } => {
+            let bans = match data.get("bans").and_then(|v| v.as_array()) {
+                Some(b) => b,
+                None => {
+                    println!("No active bans.");
+                    return;
+                }
+            };
+            if bans.is_empty() {
+                println!("No active bans.");
+                return;
+            }
+
+            let now = chrono::Utc::now().timestamp();
+
+            // Collect and sort by expires_at ascending (soonest first).
+            let mut rows: Vec<_> = bans
+                .iter()
+                .filter_map(|b| {
+                    let ip = b.get("ip")?.as_str()?;
+                    let jail = b.get("jail")?.as_str()?;
+                    let banned_at = b.get("banned_at")?.as_i64()?;
+                    let expires_at = b.get("expires_at").and_then(|v| v.as_i64());
+                    Some((ip.to_string(), jail.to_string(), banned_at, expires_at))
+                })
+                .collect();
+            rows.sort_by_key(|r| r.3.unwrap_or(i64::MAX));
+
+            // Compute column widths.
+            let ip_width = rows.iter().map(|r| r.0.len()).max().unwrap_or(2).max(2);
+
+            println!(
+                "{:<6}  {:<ip_w$}  {:<17}  EXPIRES",
+                "JAIL",
+                "IP",
+                "BANNED",
+                ip_w = ip_width
+            );
+
+            for (ip, jail, banned_at, expires_at) in &rows {
+                let banned_dt = chrono::DateTime::from_timestamp(*banned_at, 0)
+                    .map(|dt| dt.format("%d %b %H:%M").to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let expires = match expires_at {
+                    Some(exp) => format_relative(exp - now),
+                    None => "permanent".to_string(),
+                };
+                println!(
+                    "{:<6}  {:<ip_w$}  {:<17}  {}",
+                    jail,
+                    ip,
+                    banned_dt,
+                    expires,
+                    ip_w = ip_width
+                );
+            }
+            println!("\nTotal: {} active ban(s)", rows.len());
+        }
+    }
+}
+
+fn print_bans_jsonl(response: &Response) {
+    match response {
+        Response::Error { message } => {
+            eprintln!("Error: {message}");
+            std::process::exit(1);
+        }
+        Response::Ok { data: None, .. } => {}
+        Response::Ok {
+            data: Some(data), ..
+        } => {
+            if let Some(bans) = data.get("bans").and_then(|v| v.as_array()) {
+                for b in bans {
+                    let jail = b.get("jail").and_then(|v| v.as_str()).unwrap_or("");
+                    let ip = b.get("ip").and_then(|v| v.as_str()).unwrap_or("");
+                    let banned_at = b.get("banned_at").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let expires_at = b.get("expires_at").and_then(|v| v.as_i64());
+                    match expires_at {
+                        Some(exp) => println!(
+                            r#"{{"jail":"{jail}","ip":"{ip}","banned_at":{banned_at},"expires_at":{exp}}}"#
+                        ),
+                        None => println!(
+                            r#"{{"jail":"{jail}","ip":"{ip}","banned_at":{banned_at},"expires_at":null}}"#
+                        ),
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn print_response(response: &Response) {

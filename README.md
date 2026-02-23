@@ -1,10 +1,13 @@
 A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **5x faster matching · 6.6x faster startup · single binary · zero database · zero locks**
 
+Used in production at [tell.rs](https://tell.rs) to protect SSH and application endpoints.
+
 fail2ban is a 20-year-old Python codebase that works, but requires a Python runtime on every production server, serializes all firewall operations behind a global thread lock, and executes shell commands via `subprocess.Popen(shell=True)`.
 
 fail2ban-rs eliminates all of that:
 
-- **Single ~3MB binary** — no Python, no runtime, no interpreter startup overhead
+- **Single 3.2 MB binary** — no Python, no runtime, no interpreter startup overhead
+- **~6 MB RSS in production** — constant memory regardless of log volume
 - **Zero locks** — three async tasks connected by channels, single-owner state (Python fail2ban uses 9+ thread locks)
 - **5x faster per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection
 - **No shell execution** — nftables/iptables backends exec directly via argv, no `shell=True` (script backend uses `sh -c` but substitutes only validated `IpAddr` values)
@@ -17,11 +20,11 @@ Everything else you'd expect: nftables/iptables/script backends, ban time escala
 
 ## Install
 
+Requires Linux and systemd. Installs the binary, systemd service, and default config.
+
 ```bash
 curl -sSfL https://raw.githubusercontent.com/aejimmi/fail2ban-rs/main/scripts/install.sh | bash
 ```
-
-Requires Linux, systemd, and root. Installs the binary, systemd service, and default config.
 
 ```bash
 nano /etc/fail2ban-rs/config.toml     # edit config
@@ -33,14 +36,9 @@ journalctl -u fail2ban-rs -f          # logs
 
 ## Configuration
 
-See `config/default.toml` for a full example.
+See [`config/default.toml`](config/default.toml) for all options. Minimal jail:
 
 ```toml
-[global]
-state_file = "/var/lib/fail2ban-rs/state.bin"
-socket_path = "/var/run/fail2ban-rs/fail2ban-rs.sock"
-log_level = "info"
-
 [jail.sshd]
 enabled = true
 log_path = "/var/log/auth.log"
@@ -77,8 +75,9 @@ Durations accept `s`, `m`, `h`, `d`, `w` suffixes (e.g. `"10m"`, `"1h"`, `"7d"`)
 **script**: Custom commands with `<IP>` and `<JAIL>` placeholders:
 
 ```toml
-[jail.custom.backend]
-script = { ban_cmd = "/usr/local/bin/ban.sh <IP> <JAIL>", unban_cmd = "/usr/local/bin/unban.sh <IP> <JAIL>" }
+[jail.custom.backend.script]
+ban_cmd = "/usr/local/bin/ban.sh <IP> <JAIL>"
+unban_cmd = "/usr/local/bin/unban.sh <IP> <JAIL>"
 ```
 
 ### Config overlays
@@ -102,9 +101,9 @@ fail2ban-rs gen-config sshd                     # generate jail config
 systemctl reload fail2ban-rs                    # hot reload (SIGHUP)
 ```
 
-## Testing before production
+## Testing
 
-Test patterns and see what would be banned — without touching any firewall.
+Test patterns and dry-run against real logs — without touching any firewall.
 
 ```bash
 # verify a pattern extracts the right IP from a log line
@@ -157,11 +156,14 @@ cargo test
 
 ## Roadmap
 
-- **Plugin-style filters and actions** — define new services and integrations (Cloudflare, AbuseIPDB, Slack, etc.) as config files, no recompiling needed
-- **Threat feed blocking** — automatically import IP blocklists and block known attackers before they even connect
-- **Cross-server ban sharing** — servers in a cluster share bans through a lightweight registry; one node detects an attacker, all nodes block it
-- **Repeat offender escalation** — IPs that get banned across multiple jails auto-escalate to longer or permanent bans
-- **Operational CLI** — `unban --all`, check if a specific IP is banned and where, live dashboard of top offenders
+- `cargo install fail2ban-rs` / `apt install` — additional distribution channels
+- Plugin-style filters and actions — Cloudflare, AbuseIPDB, Slack integrations as config files
+- Threat feed blocking — import IP blocklists and block known attackers proactively
+- Cross-server ban sharing — lightweight registry so one node's detection blocks across the cluster
+- Repeat offender escalation — IPs banned across multiple jails auto-escalate to longer bans
+- Operational CLI — `unban --all`, live dashboard, check if a specific IP is banned
+
+[Sponsoring](https://github.com/sponsors/aejimmi) helps prioritize these.
 
 ## License
 
