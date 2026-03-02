@@ -1,7 +1,7 @@
 //! Executor task — receives firewall commands and executes them.
 //!
-//! Owns the firewall backends (one per jail) and state persistence. Runs as a
-//! single tokio task, reading commands from a bounded mpsc channel.
+//! Owns the firewall backends (one per jail). Runs as a single tokio task,
+//! reading commands from a bounded mpsc channel.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::executor_iptables::IptablesBackend;
 use crate::executor_nftables::NftablesBackend;
 use crate::executor_script::ScriptBackend;
-use crate::state::{self, BanRecord, StateSnapshot};
+use crate::state::BanRecord;
 
 /// Commands sent to the executor task.
 #[derive(Debug)]
@@ -42,8 +42,6 @@ pub enum FirewallCmd {
         jail_id: String,
         done: oneshot::Sender<Result<()>>,
     },
-    /// Persist the current ban state to disk.
-    SaveState { snapshot: StateSnapshot },
 }
 
 /// Trait for firewall backend implementations.
@@ -126,7 +124,6 @@ pub fn create_backends(
 pub async fn run(
     mut rx: mpsc::Receiver<FirewallCmd>,
     backends: HashMap<String, Box<dyn FirewallBackend>>,
-    state_path: PathBuf,
     cancel: CancellationToken,
 ) {
     let names: Vec<_> = backends
@@ -188,14 +185,6 @@ pub async fn run(
                             warn!(jail = %jail_id, error = %e, "firewall teardown failed");
                         }
                         let _ = done.send(result);
-                    }
-                    Some(FirewallCmd::SaveState { snapshot }) => {
-                        let ban_count = snapshot.bans.len();
-                        if let Err(e) = state::save(&state_path, &snapshot) {
-                            error!(error = %e, "state save failed");
-                        } else {
-                            info!(bans = ban_count, "state saved");
-                        }
                     }
                     None => {
                         info!("executor channel closed");

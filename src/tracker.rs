@@ -7,18 +7,21 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::net::IpAddr;
+use std::sync::Arc;
 
+use etchdb::{Store, WalBackend};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::ban_calc::{JailParams, build_jail_params, calc_ban_time};
+use crate::ban_state::BanState;
 use crate::circular::CircularTimestamps;
 use crate::config::JailConfig;
 use crate::executor::FirewallCmd;
 use crate::logging::Logger;
-use crate::state::{BanRecord, StateSnapshot};
+use crate::state::BanRecord;
 use crate::watcher::Failure;
 
 // ---------------------------------------------------------------------------
@@ -102,8 +105,7 @@ struct FailState {
 struct TrackerState {
     jail_params: HashMap<String, JailParams>,
     failures: HashMap<FailKey, FailState>,
-    bans: HashMap<(IpAddr, String), BanRecord>,
-    ban_counts: HashMap<IpAddr, u32>,
+    store: Arc<Store<BanState, WalBackend<BanState>>>,
     unban_queue: BinaryHeap<Reverse<UnbanTimer>>,
     total_bans: u64,
     total_unbans: u64,
@@ -152,6 +154,7 @@ pub async fn run(
     executor_tx: mpsc::Sender<FirewallCmd>,
     restored_bans: Vec<BanRecord>,
     restored_ban_counts: HashMap<IpAddr, u32>,
+    store: Arc<Store<BanState, WalBackend<BanState>>>,
     logger: Option<Logger>,
     cancel: CancellationToken,
 ) {
@@ -160,8 +163,7 @@ pub async fn run(
     let mut state = TrackerState {
         jail_params: build_jail_params(&jail_configs),
         failures: HashMap::new(),
-        bans: HashMap::new(),
-        ban_counts: restored_ban_counts,
+        store,
         unban_queue: BinaryHeap::new(),
         total_bans: 0,
         total_unbans: 0,
@@ -173,8 +175,8 @@ pub async fn run(
         logger,
     };
 
-    // Restore bans from persisted state.
-    for ban in restored_bans {
+    // Restore unban timers from persisted state.
+    for ban in &restored_bans {
         if let Some(expires) = ban.expires_at {
             state.unban_queue.push(Reverse(UnbanTimer {
                 expires_at: expires,
@@ -182,13 +184,26 @@ pub async fn run(
                 jail_id: ban.jail_id.clone(),
             }));
         }
-        let ban_key = (ban.ip, ban.jail_id.clone());
-        state.bans.insert(ban_key, ban);
     }
 
-    let save_interval = tokio::time::Duration::from_secs(60);
-    let mut save_timer = tokio::time::interval(save_interval);
-    save_timer.tick().await; // consume immediate first tick
+    // Seed the store with restored bans (from firewall restore filtering).
+    // On first boot with etch, the store already has these from WAL replay.
+    // On migration from old format, server.rs passes the filtered active_bans.
+    {
+        let store_state = state.store.read();
+        if store_state.bans.is_empty() && !restored_bans.is_empty() {
+            drop(store_state);
+            let _ = state.store.write(|tx| {
+                for ban in &restored_bans {
+                    tx.bans.put((ban.ip, ban.jail_id.clone()), ban.clone());
+                }
+                for (ip, count) in &restored_ban_counts {
+                    tx.ban_counts.put(*ip, *count);
+                }
+                Ok(())
+            });
+        }
+    }
 
     loop {
         let next_unban_sleep = next_unban_duration(&state.unban_queue);
@@ -196,8 +211,9 @@ pub async fn run(
         tokio::select! {
             _ = cancel.cancelled() => {
                 info!("tracker shutting down");
-                let snapshot = build_snapshot(&state.bans, &state.ban_counts);
-                let _ = state.executor_tx.send(FirewallCmd::SaveState { snapshot }).await;
+                if let Err(e) = state.store.flush() {
+                    warn!("final flush failed: {e}");
+                }
                 break;
             }
 
@@ -221,13 +237,6 @@ pub async fn run(
             _ = tokio::time::sleep(next_unban_sleep) => {
                 process_unbans(&mut state).await;
             }
-
-            _ = save_timer.tick() => {
-                let snapshot = build_snapshot(&state.bans, &state.ban_counts);
-                if state.executor_tx.send(FirewallCmd::SaveState { snapshot }).await.is_err() {
-                    warn!("executor channel closed during state save");
-                }
-            }
         }
     }
 }
@@ -239,7 +248,7 @@ pub async fn run(
 async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
     match cmd {
         TrackerCmd::QueryBans { respond } => {
-            let list: Vec<BanRecord> = s.bans.values().cloned().collect();
+            let list: Vec<BanRecord> = s.store.read().bans.values().cloned().collect();
             let _ = respond.send(list);
         }
 
@@ -264,9 +273,14 @@ async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
 
         TrackerCmd::GetStats { respond } => {
             let now = chrono::Utc::now().timestamp();
+            let store_state = s.store.read();
             let mut jail_stats: HashMap<String, JailStats> = HashMap::new();
             for jail_id in s.jail_params.keys() {
-                let active = s.bans.values().filter(|b| b.jail_id == *jail_id).count();
+                let active = store_state
+                    .bans
+                    .values()
+                    .filter(|b| b.jail_id == *jail_id)
+                    .count();
                 jail_stats.insert(
                     jail_id.clone(),
                     JailStats {
@@ -278,12 +292,13 @@ async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
             }
             let stats = Stats {
                 uptime_secs: (now - s.started_at).max(0),
-                active_bans: s.bans.len(),
+                active_bans: store_state.bans.len(),
                 total_bans: s.total_bans,
                 total_unbans: s.total_unbans,
                 total_failures: s.total_failures,
                 jails: jail_stats,
             };
+            drop(store_state);
             let _ = respond.send(stats);
         }
 
@@ -325,7 +340,14 @@ async fn execute_ban(ip: IpAddr, jail_id: &str, ban_time: i64, manual: bool, s: 
         }));
     }
 
-    s.bans.insert((ip, jail_id.to_string()), ban);
+    let ban_clone = ban.clone();
+    let jail_owned = jail_id.to_string();
+    if let Err(e) = s.store.write(|tx| {
+        tx.bans.put((ip, jail_owned.clone()), ban_clone.clone());
+        Ok(())
+    }) {
+        warn!("etch write failed: {e}");
+    }
     s.total_bans += 1;
     *s.jail_bans.entry(jail_id.to_string()).or_insert(0) += 1;
 
@@ -348,7 +370,7 @@ async fn do_manual_ban(
     ban_time: i64,
     s: &mut TrackerState,
 ) -> crate::error::Result<()> {
-    if s.bans.contains_key(&(ip, jail_id.to_string())) {
+    if s.store.read().bans.contains_key(&(ip, jail_id.to_string())) {
         return Err(crate::error::Error::AlreadyBanned {
             ip,
             jail: jail_id.to_string(),
@@ -364,11 +386,18 @@ async fn do_manual_unban(
     jail_id: &str,
     s: &mut TrackerState,
 ) -> crate::error::Result<()> {
-    if s.bans.remove(&(ip, jail_id.to_string())).is_none() {
+    let key = (ip, jail_id.to_string());
+    if !s.store.read().bans.contains_key(&key) {
         return Err(crate::error::Error::NotBanned {
             ip,
             jail: jail_id.to_string(),
         });
+    }
+    if let Err(e) = s.store.write(|tx| {
+        tx.bans.delete(&key);
+        Ok(())
+    }) {
+        warn!("etch write failed: {e}");
     }
     info!(%ip, jail = %jail_id, "manual unban");
     execute_unban(ip, jail_id, true, s).await;
@@ -397,7 +426,7 @@ async fn handle_failure(failure: Failure, s: &mut TrackerState) {
     *s.jail_failures.entry(failure.jail_id.clone()).or_insert(0) += 1;
 
     let ban_key = (failure.ip, failure.jail_id.clone());
-    if s.bans.contains_key(&ban_key) {
+    if s.store.read().bans.contains_key(&ban_key) {
         debug!(ip = %failure.ip, jail = %failure.jail_id, "already banned, ignoring failure");
         return;
     }
@@ -422,9 +451,21 @@ async fn handle_failure(failure: Failure, s: &mut TrackerState) {
     fail_state.timestamps.push(failure.timestamp);
 
     if fail_state.timestamps.threshold_reached(find_time) {
-        let count = *s.ban_counts.get(&failure.ip).unwrap_or(&0);
+        let count = s
+            .store
+            .read()
+            .ban_counts
+            .get(&failure.ip)
+            .copied()
+            .unwrap_or(0);
         let effective_ban_time = calc_ban_time(ban_time, count, params);
-        *s.ban_counts.entry(failure.ip).or_insert(0) += 1;
+        let ip = failure.ip;
+        if let Err(e) = s.store.write(|tx| {
+            tx.ban_counts.put(ip, count + 1);
+            Ok(())
+        }) {
+            warn!("etch write failed: {e}");
+        }
 
         info!(
             ip = %failure.ip,
@@ -452,7 +493,13 @@ async fn process_unbans(s: &mut TrackerState) {
             break;
         };
         let ban_key = (timer.ip, timer.jail_id.clone());
-        if s.bans.remove(&ban_key).is_some() {
+        if s.store.read().bans.contains_key(&ban_key) {
+            if let Err(e) = s.store.write(|tx| {
+                tx.bans.delete(&ban_key);
+                Ok(())
+            }) {
+                warn!("etch write failed: {e}");
+            }
             info!(ip = %timer.ip, jail = %timer.jail_id, "unban timer expired");
             execute_unban(timer.ip, &timer.jail_id, false, s).await;
         }
@@ -471,16 +518,5 @@ fn next_unban_duration(queue: &BinaryHeap<Reverse<UnbanTimer>>) -> tokio::time::
             tokio::time::Duration::from_secs(secs.min(60))
         }
         None => tokio::time::Duration::from_secs(60),
-    }
-}
-
-fn build_snapshot(
-    bans: &HashMap<(IpAddr, String), BanRecord>,
-    ban_counts: &HashMap<IpAddr, u32>,
-) -> StateSnapshot {
-    StateSnapshot {
-        bans: bans.values().cloned().collect(),
-        ban_counts: ban_counts.iter().map(|(ip, c)| (*ip, *c)).collect(),
-        snapshot_time: chrono::Utc::now().timestamp(),
     }
 }

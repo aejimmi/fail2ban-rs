@@ -33,8 +33,8 @@ pub enum Error {
     #[error("firewall error: {message}")]
     Firewall { message: String },
 
-    #[error("state file corrupt: {reason}")]
-    StateCorrupt { reason: String },
+    #[error("etch error: {0}")]
+    Etch(#[from] etchdb::Error),
 
     #[error("protocol error: {message}")]
     Protocol { message: String },
@@ -66,12 +66,6 @@ impl Error {
     pub fn firewall(message: impl Into<String>) -> Self {
         Self::Firewall {
             message: message.into(),
-        }
-    }
-
-    pub fn state_corrupt(reason: impl Into<String>) -> Self {
-        Self::StateCorrupt {
-            reason: reason.into(),
         }
     }
 

@@ -2,10 +2,13 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 
+use etchdb::Store;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::ban_state::BanState;
 use crate::config::JailConfig;
 use crate::executor::FirewallCmd;
 use crate::tracker::{self, TrackerCmd};
@@ -36,6 +39,14 @@ fn test_jail_config() -> JailConfig {
     }
 }
 
+fn test_store() -> Arc<Store<BanState, etchdb::WalBackend<BanState>>> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    std::mem::forget(dir); // keep the tempdir alive
+    let store = Store::<BanState, etchdb::WalBackend<BanState>>::open_wal(path).unwrap();
+    Arc::new(store)
+}
+
 #[tokio::test]
 async fn bans_after_threshold() {
     let mut jails = HashMap::new();
@@ -55,6 +66,7 @@ async fn bans_after_threshold() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -117,6 +129,7 @@ async fn no_ban_below_threshold() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -171,6 +184,7 @@ async fn no_ban_outside_find_time() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -221,6 +235,7 @@ async fn already_banned_ip_ignored() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -266,10 +281,9 @@ async fn already_banned_ip_ignored() {
     // Should NOT receive a second Ban command.
     let result =
         tokio::time::timeout(std::time::Duration::from_millis(200), executor_rx.recv()).await;
-    // Either timeout (no message) or a SaveState (periodic) — but not another Ban.
+    // Either timeout (no message) — but not another Ban.
     match result {
-        Err(_) => {}                                  // timeout, good
-        Ok(Some(FirewallCmd::SaveState { .. })) => {} // periodic save, acceptable
+        Err(_) => {} // timeout, good
         Ok(other) => panic!("expected no second Ban, got: {other:?}"),
     }
 
@@ -296,6 +310,7 @@ async fn unknown_jail_failure_ignored() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -343,6 +358,7 @@ async fn unban_timer_fires() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -386,7 +402,6 @@ async fn unban_timer_fires() {
                 got_unban = true;
                 break;
             }
-            Ok(Some(FirewallCmd::SaveState { .. })) => continue, // skip periodic saves
             Ok(Some(other)) => panic!("unexpected command: {other:?}"),
             Ok(None) => break,
             Err(_) => continue, // timeout, try again
@@ -428,6 +443,7 @@ async fn restored_bans_populate_unban_queue() {
             executor_tx,
             restored,
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -445,7 +461,6 @@ async fn restored_bans_populate_unban_queue() {
                 got_unban = true;
                 break;
             }
-            Ok(Some(FirewallCmd::SaveState { .. })) => continue,
             Ok(Some(_)) | Ok(None) => break,
             Err(_) => continue,
         }
@@ -475,6 +490,7 @@ async fn manual_ban_via_cmd() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -535,6 +551,7 @@ async fn manual_ban_already_banned_error() {
             executor_tx,
             restored,
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -588,6 +605,7 @@ async fn manual_unban_via_cmd() {
             executor_tx,
             restored,
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -646,6 +664,7 @@ async fn query_bans_via_cmd() {
             executor_tx,
             restored,
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -687,6 +706,7 @@ async fn get_stats_via_cmd() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -748,6 +768,7 @@ async fn same_ip_different_jails_tracked_independently() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             cancel_clone,
         )
@@ -801,7 +822,6 @@ async fn same_ip_different_jails_tracked_independently() {
                 got_nginx_ban = true;
                 break;
             }
-            Ok(Some(FirewallCmd::SaveState { .. })) => continue,
             Ok(Some(_)) => continue,
             Ok(None) => break,
             Err(_) => continue,

@@ -6,20 +6,30 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 
+use etchdb::Store;
 use tempfile::NamedTempFile;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use fail2ban_rs::ban_state::BanState;
 use fail2ban_rs::circular::CircularTimestamps;
 use fail2ban_rs::config::JailConfig;
 use fail2ban_rs::date::{DateFormat, DateParser};
 use fail2ban_rs::executor::FirewallCmd;
 use fail2ban_rs::ignore::IgnoreList;
 use fail2ban_rs::matcher::JailMatcher;
-use fail2ban_rs::state::{self, BanRecord, StateSnapshot};
 use fail2ban_rs::tracker::{self, TrackerCmd};
 use fail2ban_rs::watcher::{self, Failure};
+
+fn test_store() -> Arc<Store<BanState, etchdb::WalBackend<BanState>>> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    std::mem::forget(dir); // keep the tempdir alive
+    let store = Store::<BanState, etchdb::WalBackend<BanState>>::open_wal(path).unwrap();
+    Arc::new(store)
+}
 
 /// Full pipeline: watcher → tracker → verify ban command.
 #[tokio::test]
@@ -70,6 +80,7 @@ async fn watcher_to_tracker_ban() {
             executor_tx,
             vec![],
             std::collections::HashMap::new(),
+            test_store(),
             None,
             tracker_cancel,
         )
@@ -123,29 +134,6 @@ async fn watcher_to_tracker_ban() {
     }
 
     cancel.cancel();
-}
-
-/// State persistence roundtrip.
-#[test]
-fn state_roundtrip() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state.bin");
-
-    let snapshot = StateSnapshot {
-        bans: vec![BanRecord {
-            ip: IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
-            jail_id: "sshd".to_string(),
-            banned_at: 1000,
-            expires_at: Some(2000),
-        }],
-        ban_counts: vec![],
-        snapshot_time: 1500,
-    };
-
-    state::save(&path, &snapshot).unwrap();
-    let loaded = state::load(&path).unwrap().unwrap();
-    assert_eq!(loaded.bans.len(), 1);
-    assert_eq!(loaded.bans[0].ip, IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)));
 }
 
 /// Circular buffer threshold check.

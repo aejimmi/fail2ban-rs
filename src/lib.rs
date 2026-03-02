@@ -3,6 +3,7 @@
 //! Single static binary, fast two-phase matching, nftables/iptables firewall backends.
 
 pub mod ban_calc;
+pub mod ban_state;
 pub mod circular;
 pub mod config;
 pub mod control;
@@ -59,8 +60,6 @@ mod regex_tool_test;
 mod security_test;
 #[cfg(test)]
 mod server_test;
-#[cfg(test)]
-mod state_test;
 #[cfg(test)]
 mod tracker_test;
 #[cfg(test)]

@@ -11,7 +11,7 @@ use std::net::Ipv6Addr;
 
 use crate::error::{Error, Result};
 use crate::executor::{self, FirewallBackend, FirewallCmd, create_backend};
-use crate::state::{BanRecord, StateSnapshot};
+use crate::state::BanRecord;
 
 /// Records all ban/unban calls for assertion.
 struct MockBackend {
@@ -81,12 +81,9 @@ async fn ban_and_unban_order() {
     let (tx, rx) = mpsc::channel(16);
     let cancel = CancellationToken::new();
 
-    let dir = tempfile::tempdir().unwrap();
-    let state_path = dir.path().join("state.bin");
-
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        executor::run(rx, backends, state_path, cancel_clone).await;
+        executor::run(rx, backends, cancel_clone).await;
     });
 
     let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
@@ -116,37 +113,6 @@ async fn ban_and_unban_order() {
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0], "ban:1.2.3.4:sshd");
     assert_eq!(calls[1], "unban:1.2.3.4:sshd");
-}
-
-#[tokio::test]
-async fn save_state_command() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let backends = mock_backends(Arc::clone(&calls));
-    let (tx, rx) = mpsc::channel(16);
-    let cancel = CancellationToken::new();
-
-    let dir = tempfile::tempdir().unwrap();
-    let state_path = dir.path().join("state.bin");
-
-    let cancel_clone = cancel.clone();
-    let sp = state_path.clone();
-    let handle = tokio::spawn(async move {
-        executor::run(rx, backends, sp, cancel_clone).await;
-    });
-
-    let snapshot = StateSnapshot {
-        bans: vec![],
-        ban_counts: vec![],
-        snapshot_time: 1000,
-    };
-    tx.send(FirewallCmd::SaveState { snapshot }).await.unwrap();
-
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    cancel.cancel();
-    handle.await.unwrap();
-
-    // Verify state file was written.
-    assert!(state_path.exists());
 }
 
 /// Mock backend that always fails on ban.
@@ -262,11 +228,8 @@ async fn executor_channel_closed_stops() {
     let (tx, rx) = mpsc::channel::<FirewallCmd>(16);
     let cancel = CancellationToken::new();
 
-    let dir = tempfile::tempdir().unwrap();
-    let state_path = dir.path().join("state.bin");
-
     let handle = tokio::spawn(async move {
-        executor::run(rx, backends, state_path, cancel).await;
+        executor::run(rx, backends, cancel).await;
     });
 
     // Drop sender to close channel.
@@ -300,12 +263,10 @@ async fn two_jails_different_backends_dispatch_correctly() {
 
     let (tx, rx) = mpsc::channel(16);
     let cancel = CancellationToken::new();
-    let dir = tempfile::tempdir().unwrap();
-    let state_path = dir.path().join("state.bin");
 
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        executor::run(rx, backends, state_path, cancel_clone).await;
+        executor::run(rx, backends, cancel_clone).await;
     });
 
     let ip1 = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));

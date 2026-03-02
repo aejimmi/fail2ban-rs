@@ -52,9 +52,13 @@ fn firewall_error_display() {
 }
 
 #[test]
-fn state_corrupt_display() {
-    let err = Error::state_corrupt("bad CRC");
-    assert!(err.to_string().contains("bad CRC"));
+fn etch_error_display() {
+    let etch_err = etchdb::Error::WalCorrupted {
+        offset: 0,
+        reason: "test corruption".to_string(),
+    };
+    let err = Error::Etch(etch_err);
+    assert!(err.to_string().contains("etch error"));
 }
 
 #[test]

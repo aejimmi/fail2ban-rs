@@ -1,6 +1,23 @@
 # Changelog
 
-## v1.0.0 
+## v1.1.0
+
+New:
+- state: etch WAL-backed persistent store replaces postcard snapshot-on-timer approach
+- ban_state: new module defining etchdb-transactable BanState with bans and ban_counts collections
+- server: expired bans purged from store on startup instead of being blindly restored
+- config: state_file renamed to state_dir with backwards-compatible alias
+
+Fix:
+- tracker: ban and unban mutations write through to etch store immediately instead of periodic 60s snapshots
+
+Infra:
+- deps: add etchdb 0.3.2, drop postcard
+
+Breaking:
+- state: old state.bin files auto-migrated to .bin.bak, new etch WAL directory used instead
+
+## v1.0.0
 
 fail2ban-rs runs in production
 

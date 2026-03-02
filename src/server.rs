@@ -2,11 +2,15 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
+use etchdb::{FlushPolicy, Store};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use crate::ban_state::BanState;
 use crate::config::Config;
 use crate::control::{self, ControlCmd, Request, Response};
 use crate::date::DateParser;
@@ -14,7 +18,6 @@ use crate::executor::{self, FirewallCmd};
 use crate::ignore::IgnoreList;
 use crate::logging::Logger;
 use crate::matcher::JailMatcher;
-use crate::state;
 use crate::tracker::TrackerCmd;
 use crate::watcher::{self, Failure};
 
@@ -25,19 +28,76 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
     // Initialize remote logging (no-op if not configured).
     let logger = Logger::init(&config.logging);
 
-    // Load persisted state.
-    let snapshot = state::load(&config.global.state_file)?;
-    let (restored_bans, restored_ban_counts) = match snapshot {
-        Some(s) => {
-            info!(bans = s.bans.len(), "loaded persisted state");
-            let counts: std::collections::HashMap<std::net::IpAddr, u32> =
-                s.ban_counts.into_iter().collect();
-            (s.bans, counts)
+    // Migrate: if state_dir points to an old state.bin file, move it aside.
+    if config.global.state_dir.is_file() {
+        let backup = config.global.state_dir.with_extension("bin.bak");
+        info!(
+            old = %config.global.state_dir.display(),
+            backup = %backup.display(),
+            "migrating old state file out of the way for etch store"
+        );
+        std::fs::rename(&config.global.state_dir, &backup).map_err(|e| {
+            crate::error::Error::io(
+                format!(
+                    "renaming old state file: {}",
+                    config.global.state_dir.display()
+                ),
+                e,
+            )
+        })?;
+    }
+
+    // Open etch store for persistent ban state.
+    let mut store =
+        Store::<BanState, etchdb::WalBackend<BanState>>::open_wal(config.global.state_dir.clone())
+            .map_err(crate::error::Error::Etch)?;
+    store.set_flush_policy(FlushPolicy::Grouped {
+        interval: Duration::from_millis(100),
+    });
+    let store = Arc::new(store);
+
+    // Read restored state from etch, purging any expired bans.
+    let now = chrono::Utc::now().timestamp();
+    let (restored_bans, restored_ban_counts) = {
+        let state = store.read();
+
+        // Collect expired ban keys to purge from the store.
+        let expired_keys: Vec<_> = state
+            .bans
+            .iter()
+            .filter(|(_, ban)| ban.expires_at.is_some_and(|exp| exp <= now))
+            .map(|(key, _)| key.clone())
+            .collect();
+
+        let bans: Vec<crate::state::BanRecord> = state
+            .bans
+            .values()
+            .filter(|ban| ban.expires_at.is_none_or(|exp| exp > now))
+            .cloned()
+            .collect();
+        let counts: HashMap<std::net::IpAddr, u32> = state.ban_counts.clone();
+        drop(state);
+
+        // Remove expired bans from the store.
+        if !expired_keys.is_empty() {
+            info!(
+                count = expired_keys.len(),
+                "purging expired bans from store"
+            );
+            let _ = store.write(|tx| {
+                for key in &expired_keys {
+                    tx.bans.delete(key);
+                }
+                Ok(())
+            });
         }
-        None => {
+
+        if !bans.is_empty() {
+            info!(bans = bans.len(), "loaded persisted state");
+        } else {
             info!("no persisted state found");
-            (vec![], std::collections::HashMap::new())
         }
+        (bans, counts)
     };
 
     // Create channels.
@@ -62,9 +122,8 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
 
     // Spawn executor (must be running before we send init commands).
     let executor_cancel = cancel.child_token();
-    let state_path = config.global.state_file.clone();
     tokio::spawn(async move {
-        executor::run(executor_rx, backends, state_path, executor_cancel).await;
+        executor::run(executor_rx, backends, executor_cancel).await;
     });
 
     // Initialize firewall rules for each jail and await confirmation.
@@ -101,6 +160,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
     let tracker_cancel = cancel.child_token();
     let tracker_executor_tx = executor_tx.clone();
     let tracker_logger = logger.clone();
+    let tracker_store = Arc::clone(&store);
     tokio::spawn(async move {
         crate::tracker::run(
             jail_configs,
@@ -109,6 +169,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
             tracker_executor_tx,
             active_bans,
             restored_ban_counts,
+            tracker_store,
             tracker_logger,
             tracker_cancel,
         )

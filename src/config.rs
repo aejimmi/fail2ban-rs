@@ -41,9 +41,9 @@ pub struct LoggingConfig {
 /// Global daemon settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
-    /// Path to persist ban state across restarts.
-    #[serde(default = "default_state_file")]
-    pub state_file: PathBuf,
+    /// Directory to persist ban state across restarts (etch WAL).
+    #[serde(default = "default_state_dir", alias = "state_file")]
+    pub state_dir: PathBuf,
 
     /// Unix socket path for CLI communication.
     #[serde(default = "default_socket_path")]
@@ -176,8 +176,8 @@ pub enum LogBackend {
 
 // Defaults
 
-fn default_state_file() -> PathBuf {
-    PathBuf::from("/var/lib/fail2ban-rs/state.bin")
+fn default_state_dir() -> PathBuf {
+    PathBuf::from("/var/lib/fail2ban-rs/state")
 }
 
 fn default_socket_path() -> PathBuf {
