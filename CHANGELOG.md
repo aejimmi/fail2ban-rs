@@ -11,9 +11,6 @@ New:
 Fix:
 - tracker: ban and unban mutations write through to etch store immediately instead of periodic 60s snapshots
 
-Infra:
-- deps: add etchdb 0.3.2, drop postcard
-
 Breaking:
 - state: old state.bin files auto-migrated to .bin.bak, new etch WAL directory used instead
 
