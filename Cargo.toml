@@ -30,6 +30,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 etchdb = "0.3.2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+maxminddb = { version = "0.27", features = ["mmap", "simdutf8"] }
+memmap2 = "0.9.10"
 
 [features]
 default = []

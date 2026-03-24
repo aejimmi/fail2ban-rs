@@ -56,6 +56,15 @@ pub struct GlobalConfig {
     /// Bounded channel capacity.
     #[serde(default = "default_channel_size")]
     pub channel_size: usize,
+
+    /// Optional path to MaxMind ASN database
+    pub maxmind_asn: Option<PathBuf>,
+
+    /// Optional path to MaxMind Country database
+    pub maxmind_country: Option<PathBuf>,
+
+    /// Optional path to MaxMind City database
+    pub maxmind_city: Option<PathBuf>,
 }
 
 /// Per-jail configuration.
@@ -153,6 +162,10 @@ pub struct JailConfig {
     /// Webhook URL — POST JSON on ban events.
     #[serde(default)]
     pub webhook: Option<String>,
+
+    /// Which MaxMind databases to query for this jail (e.g. ["asn", "country"])
+    #[serde(default)]
+    pub maxmind: Vec<String>,
 }
 
 /// Firewall backend selection.
@@ -426,6 +439,49 @@ fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
         }
         other => {
             *base = other;
+        }
+    }
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            state_dir: default_state_dir(),
+            socket_path: default_socket_path(),
+            log_level: default_log_level(),
+            channel_size: default_channel_size(),
+            maxmind_asn: None,
+            maxmind_country: None,
+            maxmind_city: None,
+        }
+    }
+}
+
+impl Default for JailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            log_path: PathBuf::new(),
+            date_format: default_date_format(),
+            filter: vec![],
+            max_retry: default_max_retry(),
+            find_time: default_find_time(),
+            ban_time: default_ban_time(),
+            port: vec![],
+            protocol: default_protocol(),
+            bantime_increment: false,
+            bantime_factor: default_bantime_factor(),
+            bantime_multipliers: vec![],
+            bantime_maxtime: default_bantime_maxtime(),
+            log_backend: LogBackend::default(),
+            journalmatch: vec![],
+            backend: Backend::default(),
+            ignoreregex: vec![],
+            ignoreip: vec![],
+            ignoreself: default_true(),
+            reban_on_restart: default_true(),
+            webhook: None,
+            maxmind: vec![],
         }
     }
 }

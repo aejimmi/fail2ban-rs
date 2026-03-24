@@ -161,8 +161,10 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
     let tracker_executor_tx = executor_tx.clone();
     let tracker_logger = logger.clone();
     let tracker_store = Arc::clone(&store);
+    let tracker_global_config = config.global.clone();
     tokio::spawn(async move {
         crate::tracker::run(
+            tracker_global_config,
             jail_configs,
             failure_rx,
             tracker_cmd_rx,
@@ -343,7 +345,8 @@ async fn reload_config(
     let jail_count = jail_configs.len();
 
     let _ = tracker_cmd_tx
-        .send(TrackerCmd::UpdateJails {
+        .send(TrackerCmd::UpdateConfig {
+            global: new_config.global.clone(),
             jails: jail_configs,
         })
         .await;
@@ -472,7 +475,7 @@ async fn handle_control_request(
 
 #[cfg(unix)]
 async fn signal_sighup() {
-    use tokio::signal::unix::{SignalKind, signal};
+    use tokio::signal::unix::{signal, SignalKind};
     let mut stream = match signal(SignalKind::hangup()) {
         Ok(s) => s,
         Err(e) => {

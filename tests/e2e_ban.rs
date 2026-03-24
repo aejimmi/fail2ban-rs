@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use fail2ban_rs::ban_state::BanState;
 use fail2ban_rs::circular::CircularTimestamps;
-use fail2ban_rs::config::JailConfig;
+use fail2ban_rs::config::{GlobalConfig, JailConfig};
 use fail2ban_rs::date::{DateFormat, DateParser};
 use fail2ban_rs::executor::FirewallCmd;
 use fail2ban_rs::ignore::IgnoreList;
@@ -29,6 +29,10 @@ fn test_store() -> Arc<Store<BanState, etchdb::WalBackend<BanState>>> {
     std::mem::forget(dir); // keep the tempdir alive
     let store = Store::<BanState, etchdb::WalBackend<BanState>>::open_wal(path).unwrap();
     Arc::new(store)
+}
+
+fn test_global_config() -> GlobalConfig {
+    GlobalConfig::default()
 }
 
 /// Full pipeline: watcher → tracker → verify ban command.
@@ -65,6 +69,7 @@ async fn watcher_to_tracker_ban() {
         ignoreself: false,
         reban_on_restart: true,
         webhook: None,
+        ..JailConfig::default()
     };
 
     let mut jails = HashMap::new();
@@ -75,6 +80,7 @@ async fn watcher_to_tracker_ban() {
     let tracker_cancel = cancel.child_token();
     tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,

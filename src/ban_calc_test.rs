@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ban_calc::{JailParams, build_jail_params, calc_ban_time};
+use crate::ban_calc::{build_jail_params, calc_ban_time, JailParams};
 use crate::config::JailConfig;
 
 fn base_params() -> JailParams {
@@ -51,7 +51,7 @@ fn explicit_multipliers() {
     assert_eq!(calc_ban_time(60, 2, &params), 240); // 60 * 4
     assert_eq!(calc_ban_time(60, 3, &params), 480); // 60 * 8
     assert_eq!(calc_ban_time(60, 4, &params), 960); // 60 * 16
-    // Beyond list length: clamps to last multiplier.
+                                                    // Beyond list length: clamps to last multiplier.
     assert_eq!(calc_ban_time(60, 5, &params), 960); // 60 * 16
     assert_eq!(calc_ban_time(60, 99, &params), 960); // 60 * 16
 }
@@ -171,27 +171,9 @@ fn high_count_does_not_panic() {
 
 fn test_jail_config() -> JailConfig {
     JailConfig {
-        enabled: true,
         log_path: "/tmp/test.log".into(),
-        date_format: crate::date::DateFormat::Syslog,
         filter: vec!["from <HOST>".to_string()],
-        max_retry: 5,
-        find_time: 600,
-        ban_time: 3600,
-        port: vec![],
-        protocol: "tcp".to_string(),
-        bantime_increment: false,
-        bantime_factor: 1.0,
-        bantime_multipliers: vec![],
-        bantime_maxtime: 604800,
-        backend: crate::config::Backend::Nftables,
-        log_backend: crate::config::LogBackend::default(),
-        journalmatch: vec![],
-        ignoreregex: vec![],
-        ignoreip: vec![],
-        ignoreself: false,
-        reban_on_restart: true,
-        webhook: None,
+        ..JailConfig::default()
     }
 }
 

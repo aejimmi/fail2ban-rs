@@ -11,7 +11,7 @@ use std::net::Ipv6Addr;
 
 use crate::config::JailConfig;
 use crate::error::{Error, Result};
-use crate::executor::{self, FirewallBackend, FirewallCmd, create_backend};
+use crate::executor::{self, create_backend, FirewallBackend, FirewallCmd};
 use crate::state::BanRecord;
 
 /// Build a default jail configs map with reban_on_restart enabled for "sshd".
@@ -44,6 +44,7 @@ fn test_jail_config(restore: bool) -> JailConfig {
         ignoreself: false,
         reban_on_restart: restore,
         webhook: None,
+        maxmind: vec![],
     }
 }
 

@@ -23,20 +23,9 @@ fn test_jail_config() -> JailConfig {
         max_retry: 3,
         find_time: 600,
         ban_time: 60,
-        port: vec![],
-        protocol: "tcp".to_string(),
-        bantime_increment: false,
-        bantime_factor: 1.0,
-        bantime_multipliers: vec![],
-        bantime_maxtime: 604800,
-        backend: crate::config::Backend::Nftables,
-        log_backend: crate::config::LogBackend::default(),
-        journalmatch: vec![],
-        ignoreregex: vec![],
-        ignoreip: vec![],
         ignoreself: false,
-        reban_on_restart: true,
-        webhook: None,
+        maxmind: vec!["asn".to_string(), "country".to_string(), "city".to_string()],
+        ..JailConfig::default()
     }
 }
 
@@ -46,6 +35,28 @@ fn test_store() -> Arc<Store<BanState, etchdb::WalBackend<BanState>>> {
     std::mem::forget(dir); // keep the tempdir alive
     let store = Store::<BanState, etchdb::WalBackend<BanState>>::open_wal(path).unwrap();
     Arc::new(store)
+}
+
+fn test_global_config() -> crate::config::GlobalConfig {
+    crate::config::GlobalConfig {
+        state_dir: std::path::PathBuf::from("/tmp/state"),
+        socket_path: std::path::PathBuf::from("/tmp/sock"),
+        log_level: "info".to_string(),
+        channel_size: 1024,
+        maxmind_asn: Some(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/GeoLite2-ASN-Test.mmdb"),
+        ),
+        maxmind_country: Some(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/GeoLite2-Country-Test.mmdb"),
+        ),
+        maxmind_city: Some(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/GeoLite2-City-Test.mmdb"),
+        ),
+        ..crate::config::GlobalConfig::default()
+    }
 }
 
 #[tokio::test]
@@ -61,6 +72,7 @@ async fn bans_after_threshold() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -127,6 +139,7 @@ async fn reban_on_restart_false_still_bans_new_offenders() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -189,6 +202,7 @@ async fn no_ban_below_threshold() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -244,6 +258,7 @@ async fn no_ban_outside_find_time() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -295,6 +310,7 @@ async fn already_banned_ip_ignored() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -370,6 +386,7 @@ async fn unknown_jail_failure_ignored() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -418,6 +435,7 @@ async fn unban_timer_fires() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -503,6 +521,7 @@ async fn restored_bans_populate_unban_queue() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -550,6 +569,7 @@ async fn manual_ban_via_cmd() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -611,6 +631,7 @@ async fn manual_ban_already_banned_error() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -665,6 +686,7 @@ async fn manual_unban_via_cmd() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -724,6 +746,7 @@ async fn query_bans_via_cmd() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -766,6 +789,7 @@ async fn get_stats_via_cmd() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -828,6 +852,7 @@ async fn same_ip_different_jails_tracked_independently() {
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
         tracker::run(
+            test_global_config(),
             jails,
             failure_rx,
             cmd_rx,
@@ -897,6 +922,177 @@ async fn same_ip_different_jails_tracked_independently() {
         got_nginx_ban,
         "same IP should be independently bannable in different jails"
     );
+
+    cancel.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_maxmind_asn_att() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .with_test_writer()
+        .try_init();
+
+    let mut jails = HashMap::new();
+    jails.insert("sshd".to_string(), test_jail_config());
+
+    let (failure_tx, failure_rx) = mpsc::channel(16);
+    let (executor_tx, mut executor_rx) = mpsc::channel(16);
+    let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+    let cancel = CancellationToken::new();
+
+    let cancel_clone = cancel.clone();
+    let handle = tokio::spawn(async move {
+        tracker::run(
+            test_global_config(),
+            jails,
+            failure_rx,
+            cmd_rx,
+            executor_tx,
+            vec![],
+            HashMap::new(),
+            test_store(),
+            None,
+            cancel_clone,
+        )
+        .await;
+    });
+
+    // Target: ASN 7018 (AT&T Services, Inc.)
+    let ip: std::net::IpAddr = "71.134.65.5".parse().unwrap();
+    let now = chrono::Utc::now().timestamp();
+
+    for i in 0..3 {
+        failure_tx
+            .send(Failure {
+                ip,
+                jail_id: "sshd".to_string(),
+                timestamp: now + i,
+            })
+            .await
+            .unwrap();
+    }
+
+    let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(cmd, FirewallCmd::Ban { .. }));
+
+    cancel.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_maxmind_country_uk_ipv6() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .with_test_writer()
+        .try_init();
+
+    let mut jails = HashMap::new();
+    jails.insert("sshd".to_string(), test_jail_config());
+
+    let (failure_tx, failure_rx) = mpsc::channel(16);
+    let (executor_tx, mut executor_rx) = mpsc::channel(16);
+    let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+    let cancel = CancellationToken::new();
+
+    let cancel_clone = cancel.clone();
+    let handle = tokio::spawn(async move {
+        tracker::run(
+            test_global_config(),
+            jails,
+            failure_rx,
+            cmd_rx,
+            executor_tx,
+            vec![],
+            HashMap::new(),
+            test_store(),
+            None,
+            cancel_clone,
+        )
+        .await;
+    });
+
+    // Target: United Kingdom (IPv6)
+    let ip: std::net::IpAddr = "2a02:dd40:22::42".parse().unwrap();
+    let now = chrono::Utc::now().timestamp();
+
+    for i in 0..3 {
+        failure_tx
+            .send(Failure {
+                ip,
+                jail_id: "sshd".to_string(),
+                timestamp: now + i,
+            })
+            .await
+            .unwrap();
+    }
+
+    let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(cmd, FirewallCmd::Ban { .. }));
+
+    cancel.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_maxmind_city_sweden() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .with_test_writer()
+        .try_init();
+
+    let mut jails = HashMap::new();
+    jails.insert("sshd".to_string(), test_jail_config());
+
+    let (failure_tx, failure_rx) = mpsc::channel(16);
+    let (executor_tx, mut executor_rx) = mpsc::channel(16);
+    let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+    let cancel = CancellationToken::new();
+
+    let cancel_clone = cancel.clone();
+    let handle = tokio::spawn(async move {
+        tracker::run(
+            test_global_config(),
+            jails,
+            failure_rx,
+            cmd_rx,
+            executor_tx,
+            vec![],
+            HashMap::new(),
+            test_store(),
+            None,
+            cancel_clone,
+        )
+        .await;
+    });
+
+    // Target: Linköping, Sweden (Validates UTF-8 handling too!)
+    let ip: std::net::IpAddr = "89.160.20.142".parse().unwrap();
+    let now = chrono::Utc::now().timestamp();
+
+    for i in 0..3 {
+        failure_tx
+            .send(Failure {
+                ip,
+                jail_id: "sshd".to_string(),
+                timestamp: now + i,
+            })
+            .await
+            .unwrap();
+    }
+
+    let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(cmd, FirewallCmd::Ban { .. }));
 
     cancel.cancel();
     handle.await.unwrap();
