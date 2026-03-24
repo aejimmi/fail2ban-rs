@@ -107,6 +107,9 @@ enum Command {
 
     /// List available built-in filter templates
     ListFilters,
+
+    /// Show configured MaxMind databases
+    ListMaxmind,
 }
 
 #[tokio::main]
@@ -205,6 +208,35 @@ async fn main() -> Result<()> {
             for f in fail2ban_rs::filters::FILTERS {
                 println!("{:20} {}", f.name, f.description);
             }
+        }
+
+        Command::ListMaxmind => {
+            let config = Config::from_file(&cli.config).context("failed to load configuration")?;
+            println!("Available MaxMind databases (from config):");
+            println!(
+                "  ASN:     {}",
+                config
+                    .global
+                    .maxmind_asn
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "Not configured".to_string())
+            );
+            println!(
+                "  Country: {}",
+                config
+                    .global
+                    .maxmind_country
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "Not configured".to_string())
+            );
+            println!(
+                "  City:    {}",
+                config
+                    .global
+                    .maxmind_city
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "Not configured".to_string())
+            );
         }
     }
 

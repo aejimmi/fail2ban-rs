@@ -14,6 +14,7 @@ use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+use maxminddb::geoip2;
 
 use crate::ban_calc::{JailParams, build_jail_params, calc_ban_time};
 use crate::ban_state::BanState;
@@ -49,8 +50,11 @@ pub enum TrackerCmd {
     },
     /// Return runtime statistics.
     GetStats { respond: oneshot::Sender<Stats> },
-    /// Hot-reload jail configurations.
-    UpdateJails { jails: HashMap<String, JailConfig> },
+    /// Hot-reload global and jail configurations.
+    UpdateConfig {
+        global: crate::config::GlobalConfig,
+        jails: HashMap<String, JailConfig>,
+    },
 }
 
 /// Runtime statistics snapshot.
@@ -104,6 +108,7 @@ struct FailState {
 /// All mutable tracker state, grouped to reduce function argument counts.
 struct TrackerState {
     jail_params: HashMap<String, JailParams>,
+    jail_maxmind: HashMap<String, Vec<String>>,
     failures: HashMap<FailKey, FailState>,
     store: Arc<Store<BanState, WalBackend<BanState>>>,
     unban_queue: BinaryHeap<Reverse<UnbanTimer>>,
@@ -115,6 +120,10 @@ struct TrackerState {
     started_at: i64,
     executor_tx: mpsc::Sender<FirewallCmd>,
     logger: Option<Logger>,
+    // MaxMind Readers
+    maxmind_asn: Option<maxminddb::Reader<memmap2::Mmap>>,
+    maxmind_country: Option<maxminddb::Reader<memmap2::Mmap>>,
+    maxmind_city: Option<maxminddb::Reader<memmap2::Mmap>>,
 }
 
 impl TrackerState {
@@ -148,6 +157,7 @@ impl TrackerState {
 /// Run the tracker task.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
+    global_config: crate::config::GlobalConfig,
     jail_configs: HashMap<String, JailConfig>,
     mut failure_rx: mpsc::Receiver<Failure>,
     mut cmd_rx: mpsc::Receiver<TrackerCmd>,
@@ -160,8 +170,52 @@ pub async fn run(
 ) {
     info!("tracker started");
 
+    // Load MaxMind databases with detailed startup logging
+    let maxmind_asn = global_config.maxmind_asn.as_ref().and_then(|p| {
+        match unsafe { maxminddb::Reader::open_mmap(p) } {
+            Ok(reader) => {
+                info!(path = %p.display(), "MaxMind ASN database loaded");
+                Some(reader)
+            }
+            Err(e) => {
+                warn!(path = %p.display(), error = %e, "failed to load MaxMind ASN database");
+                None
+            }
+        }
+    });
+
+    let maxmind_country = global_config.maxmind_country.as_ref().and_then(|p| {
+        match unsafe { maxminddb::Reader::open_mmap(p) } {
+            Ok(reader) => {
+                info!(path = %p.display(), "MaxMind Country database loaded");
+                Some(reader)
+            }
+            Err(e) => {
+                warn!(path = %p.display(), error = %e, "failed to load MaxMind Country database");
+                None
+            }
+        }
+    });
+
+    let maxmind_city = global_config.maxmind_city.as_ref().and_then(|p| {
+        match unsafe { maxminddb::Reader::open_mmap(p) } {
+            Ok(reader) => {
+                info!(path = %p.display(), "MaxMind City database loaded");
+                Some(reader)
+            }
+            Err(e) => {
+                warn!(path = %p.display(), error = %e, "failed to load MaxMind City database");
+                None
+            }
+        }
+    });
+
     let mut state = TrackerState {
         jail_params: build_jail_params(&jail_configs),
+        jail_maxmind: jail_configs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.maxmind.clone()))
+            .collect(),
         failures: HashMap::new(),
         store,
         unban_queue: BinaryHeap::new(),
@@ -173,6 +227,9 @@ pub async fn run(
         started_at: chrono::Utc::now().timestamp(),
         executor_tx,
         logger,
+        maxmind_asn,
+        maxmind_country,
+        maxmind_city,
     };
 
     // Restore unban timers from persisted state.
@@ -302,12 +359,53 @@ async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
             let _ = respond.send(stats);
         }
 
-        TrackerCmd::UpdateJails { jails } => {
-            info!(jails = jails.len(), "updating jail configurations");
+        TrackerCmd::UpdateConfig { global, jails } => {
+            info!(jails = jails.len(), "updating jail and global configurations");
             let new_params = build_jail_params(&jails);
             s.failures
                 .retain(|(_, jail_id), _| new_params.contains_key(jail_id));
+            s.jail_maxmind = jails.iter().map(|(k, v)| (k.clone(), v.maxmind.clone())).collect();
             s.jail_params = new_params;
+
+            // Hot-reload MaxMind Databases
+            s.maxmind_asn = global.maxmind_asn.as_ref().and_then(|p| {
+                match unsafe { maxminddb::Reader::open_mmap(p) } {
+                    Ok(reader) => {
+                        info!(path = %p.display(), "MaxMind ASN database loaded");
+                        Some(reader)
+                    }
+                    Err(e) => {
+                        warn!(path = %p.display(), error = %e, "failed to load MaxMind ASN database");
+                        None
+                    }
+                }
+            });
+
+            s.maxmind_country = global.maxmind_country.as_ref().and_then(|p| {
+                match unsafe { maxminddb::Reader::open_mmap(p) } {
+                    Ok(reader) => {
+                        info!(path = %p.display(), "MaxMind Country database loaded");
+                        Some(reader)
+                    }
+                    Err(e) => {
+                        warn!(path = %p.display(), error = %e, "failed to load MaxMind Country database");
+                        None
+                    }
+                }
+            });
+
+            s.maxmind_city = global.maxmind_city.as_ref().and_then(|p| {
+                match unsafe { maxminddb::Reader::open_mmap(p) } {
+                    Ok(reader) => {
+                        info!(path = %p.display(), "MaxMind City database loaded");
+                        Some(reader)
+                    }
+                    Err(e) => {
+                        warn!(path = %p.display(), error = %e, "failed to load MaxMind City database");
+                        None
+                    }
+                }
+            });
         }
     }
 }
@@ -467,9 +565,57 @@ async fn handle_failure(failure: Failure, s: &mut TrackerState) {
             warn!("etch write failed: {e}");
         }
 
+        let mut asn_info: Option<String> = None;
+        let mut country_info: Option<String> = None;
+        let mut city_info: Option<String> = None;
+
+        if let Some(mm_types) = s.jail_maxmind.get(&failure.jail_id) {
+            if mm_types.contains(&"asn".to_string()) {
+                if let Some(reader) = &s.maxmind_asn {
+                    if let Ok(result) = reader.lookup(failure.ip) {
+                        if let Ok(Some(record)) = result.decode::<geoip2::Asn>() {
+                            asn_info = match (record.autonomous_system_number, record.autonomous_system_organization) {
+                                (Some(num), Some(org)) => Some(format!("AS{} ({})", num, org)),
+                                (Some(num), None) => Some(format!("AS{}", num)),
+                                (None, Some(org)) => Some(org.to_string()),
+                                _ => None,
+                            };
+                        }
+                    }
+                }
+            }
+
+            if mm_types.contains(&"country".to_string()) {
+                if let Some(reader) = &s.maxmind_country {
+                    if let Ok(result) = reader.lookup(failure.ip) {
+                        if let Ok(Some(record)) = result.decode::<geoip2::Country>() {
+                            if let Some(name) = record.country.names.english {
+                                country_info = Some(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if mm_types.contains(&"city".to_string()) {
+                if let Some(reader) = &s.maxmind_city {
+                    if let Ok(result) = reader.lookup(failure.ip) {
+                        if let Ok(Some(record)) = result.decode::<geoip2::City>() {
+                            if let Some(name) = record.city.names.english {
+                                city_info = Some(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         info!(
             ip = %failure.ip,
             jail = %failure.jail_id,
+            maxmind_asn = asn_info,
+            maxmind_country = country_info,
+            maxmind_city = city_info,
             ban_time = effective_ban_time,
             ban_count = count + 1,
             "threshold reached, banning"
