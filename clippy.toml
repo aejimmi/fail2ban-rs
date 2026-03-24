@@ -1,3 +1,38 @@
 allow-expect-in-tests = true
 allow-unwrap-in-tests = true
 large-error-threshold = 256
+
+# -- Restriction cherry-picks (never enable the whole group) --
+# undocumented_unsafe_blocks = "deny"    — via Cargo.toml [workspace.lints.clippy]
+# multiple_unsafe_ops_per_block = "warn"
+# unwrap_used = "deny"
+# indexing_slicing = "warn"
+# panic = "deny"
+# dbg_macro = "deny"
+
+# -- Pedantic overrides --
+# Tests use `use super::*` per project convention
+avoid-breaking-exported-api = false
+# wildcard_imports = "allow"            — set via Cargo.toml pedantic group
+
+# Below: all pedantic lints we suppress and why.
+# These are set in Cargo.toml as allow because clippy.toml
+# cannot suppress workspace lints — only Cargo.toml can.
+#
+# module_name_repetitions  — domain types naturally repeat module name
+# must_use_candidate       — too noisy, not every fn needs #[must_use]
+# missing_errors_doc       — error types are self-documenting via thiserror
+# missing_panics_doc       — we deny panic, so panics doc is moot
+# cast_possible_truncation — pervasive size conversions (u64 → f64, usize ↔ u32)
+# cast_precision_loss      — same
+# cast_sign_loss           — same
+# cast_possible_wrap       — same
+# wildcard_imports         — tests use `use super::*`
+# return_self_not_must_use — builder patterns
+# too_many_lines           — CLAUDE.md enforces 30-line functions; clippy's 100 is redundant
+# match_same_arms          — sometimes intentionally separate for readability
+# used_underscore_binding  — common pattern for unused bindings
+# doc_markdown             — too many false positives on domain terms
+# struct_excessive_bools   — config structs legitimately need multiple bools
+# items_after_statements   — common Rust style
+# similar_names            — legitimate short names in domain code (src/dst, idx/len)
