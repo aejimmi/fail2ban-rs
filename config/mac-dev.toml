@@ -1,0 +1,32 @@
+# Development config — works without root on macOS.
+#
+#   mkdir -p /tmp/fail2ban-rs
+#   cargo run -- -c config/dev.toml run
+
+[global]
+state_file = "/tmp/fail2ban-rs/state.bin"
+socket_path = "/tmp/fail2ban-rs/fail2ban-rs.sock"
+log_level = "debug"
+channel_size = 1024
+
+[jail.test]
+enabled = true
+log_path = "/var/log/install.log"
+date_format = "syslog"
+
+filter = [
+    'sshd\[\d+\]: Failed password for .* from <HOST>',
+    'sshd\[\d+\]: Invalid user .* from <HOST>',
+]
+
+port = ["22"]
+protocol = "tcp"
+max_retry = 3
+find_time = "10m"
+ban_time = "5m"
+ignoreip = ["127.0.0.1/8", "::1/128"]
+ignoreself = false
+
+[jail.test.backend.script]
+ban_cmd = "echo ban <IP>"
+unban_cmd = "echo unban <IP>"

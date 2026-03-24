@@ -1,7 +1,7 @@
 //! fail2ban-rs — A pure-Rust replacement for fail2ban.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, IsTerminal};
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -314,6 +314,8 @@ fn init_tracing(level: Option<&str>) {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter));
 
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .with_env_filter(env_filter)
         .with_target(false)
         .init();
