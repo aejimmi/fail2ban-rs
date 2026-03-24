@@ -182,12 +182,16 @@ impl JailMatcher {
 
 /// Extract an IP address from a regex match span.
 ///
-/// Scans space-delimited tokens from the right. In typical log patterns,
-/// `<HOST>` appears near the end of the match (before `port \d+`), so
-/// scanning from the right finds the IP in 1–3 token checks.
+/// Splits on characters that cannot appear in any IP address (v4 or v6),
+/// then scans tokens from the right.  In typical log patterns `<HOST>`
+/// appears near the end of the match, so the IP is found in 1–2 checks.
+///
+/// This handles IPs that are not space-delimited, e.g. `[185.0.0.1]`.
 fn extract_ip(span: &str) -> Option<IpAddr> {
-    for token in span.rsplit(' ') {
-        if let Ok(ip) = token.parse::<IpAddr>() {
+    for token in span.rsplit(|c: char| !c.is_ascii_hexdigit() && c != '.' && c != ':') {
+        if token.len() >= 2
+            && let Ok(ip) = token.parse::<IpAddr>()
+        {
             return Some(ip);
         }
     }

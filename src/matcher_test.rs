@@ -128,6 +128,56 @@ fn empty_line() {
 }
 
 // ---------------------------------------------------------------------------
+// IP extraction without surrounding whitespace (issue #1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn host_in_brackets_no_spaces() {
+    // Exact reproduction from issue #1: postfix log with IP in brackets, no spaces.
+    let patterns =
+        vec![r"connect from .*\.internet-measurement\.com\[<HOST>\]".to_string()];
+    let m = JailMatcher::new(&patterns).unwrap();
+    let line = "postfix/smtpd[327792]: connect from imperative.monitoring.internet-measurement.com[185.247.137.113]";
+    let result = m.try_match(line).expect("should match IP in brackets without spaces");
+    assert_eq!(
+        result.ip,
+        IpAddr::V4(Ipv4Addr::new(185, 247, 137, 113))
+    );
+}
+
+#[test]
+fn host_in_brackets_with_spaces_still_works() {
+    // The original working case from issue #1 — must not regress.
+    let patterns =
+        vec![r"connect from .*\.internet-measurement\.com\[ <HOST> \]".to_string()];
+    let m = JailMatcher::new(&patterns).unwrap();
+    let line = "postfix/smtpd[327792]: connect from imperative.monitoring.internet-measurement.com[ 185.247.137.113 ]";
+    let result = m.try_match(line).expect("should match IP in brackets with spaces");
+    assert_eq!(
+        result.ip,
+        IpAddr::V4(Ipv4Addr::new(185, 247, 137, 113))
+    );
+}
+
+#[test]
+fn host_in_parens_no_spaces() {
+    let patterns = vec![r"blocked \(<HOST>\)".to_string()];
+    let m = JailMatcher::new(&patterns).unwrap();
+    let line = "blocked (10.0.0.1)";
+    let result = m.try_match(line).expect("should match IP in parens");
+    assert_eq!(result.ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+}
+
+#[test]
+fn host_ipv6_in_brackets_no_spaces() {
+    let patterns = vec![r"from \[<HOST>\]".to_string()];
+    let m = JailMatcher::new(&patterns).unwrap();
+    let line = "from [2001:db8::1]";
+    let result = m.try_match(line).expect("should match IPv6 in brackets");
+    assert_eq!(result.ip, "2001:db8::1".parse::<IpAddr>().unwrap());
+}
+
+// ---------------------------------------------------------------------------
 // ignoreregex tests
 // ---------------------------------------------------------------------------
 

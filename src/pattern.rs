@@ -6,8 +6,8 @@
 
 use crate::error::{Error, Result};
 
-/// Combined host capture group: matches IPv4 or IPv6 addresses.
-const HOST_CAPTURE: &str = r"(?P<host>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[0-9a-fA-F:]{2,39})";
+/// Non-capturing host group: matches IPv4 or IPv6 addresses.
+const HOST_CAPTURE: &str = r"(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[0-9a-fA-F:]{2,39})";
 
 /// The placeholder token in user patterns.
 const HOST_TAG: &str = "<HOST>";
