@@ -11,7 +11,7 @@ use std::net::Ipv6Addr;
 
 use crate::config::JailConfig;
 use crate::error::{Error, Result};
-use crate::executor::{self, create_backend, FirewallBackend, FirewallCmd};
+use crate::executor::{self, FirewallBackend, FirewallCmd, create_backend};
 use crate::state::BanRecord;
 
 /// Build a default jail configs map with reban_on_restart enabled for "sshd".
@@ -93,7 +93,7 @@ impl FirewallBackend for MockBackend {
         Ok(false)
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mock"
     }
 }
@@ -170,7 +170,7 @@ impl FirewallBackend for FailingMockBackend {
     async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
         Ok(false)
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "failing-mock"
     }
 }

@@ -3,63 +3,54 @@
 ## v1.1.0
 
 New:
-- state: etch WAL-backed persistent store replaces postcard snapshot-on-timer approach
-- ban_state: new module defining etchdb-transactable BanState with bans and ban_counts collections
-- server: expired bans purged from store on startup instead of being blindly restored
-- config: state_file renamed to state_dir with backwards-compatible alias
+- geo: country, city, and ASN info on ban events using local MaxMind databases
+- geo: invalid field names rejected at startup instead of silently ignored
+- geo: list-maxmind command shows database paths and load status
+- geo: can be disabled at compile time
+- jails: state_file renamed to state_dir, old name still works
+- jails: per-jail option to skip re-banning on restart when firewall rules already exist
+- jails: macOS development config for rootless testing
+- persistence: write-ahead-log storage for safer crash recovery
+- persistence: bans saved immediately instead of every 60 seconds
+- startup: expired bans cleaned up instead of being restored
 
 Fix:
-- tracker: ban and unban mutations write through to etch store immediately instead of periodic 60s snapshots
+- logging: clean output when piped or redirected, logs written to stderr
+- matching: IPs inside brackets now detected correctly in postfix-style logs
+- geo: database files validated before loading, warns on unsafe permissions
 
 Breaking:
-- state: old state.bin files auto-migrated to .bin.bak, new etch WAL directory used instead
+- persistence: old state.bin files backed up automatically, new storage format used
 
 ## v1.0.0
 
 fail2ban-rs runs in production
 
 New:
-- cli: list-bans outputs a human-readable table sorted by expiry with relative time remaining
-- cli: list-bans --json flag for JSONL output with jail-first field ordering
+- bans: list-bans outputs a sorted table with relative time remaining
+- bans: list-bans supports JSON output
 
 ## v0.1.3
 
-- cli: dry-run output shows jail config, threshold, ban count, and per-IP remaining failures
-- cli: regex tool explains match results and gives hints on no-match
-- readme: testing before production section with regex and dry-run examples
+- testing: dry-run shows jail config, threshold, ban count, and per-IP remaining failures
+- testing: regex tool explains match results and gives hints on no-match
 
 ## v0.1.2
 
-New:
-- executor: resolve nft/iptables/ip6tables to absolute paths at startup, preventing PATH hijack
-- benches: line mix updated to 30/70 hit/miss ratio based on openssh_2k.log from logpai/loghub
-- sample: openssh_2k.log added as reference dataset for benchmark calibration
-
-Fix:
-- readme: pipeline speedup corrected from 3.2x to 5x using realistic log distribution
-- readme: shell execution claim clarified to note script backend uses sh -c with validated IpAddr
-- executor: script backend documents safety invariant for sh -c substitution
+- security: firewall commands resolved to absolute paths to prevent PATH hijack
 
 ## v0.1.1
 
 New:
-- matcher: AC-guided regex selection replaces RegexSet, skips impossible patterns via deduplicated prefix mapping
-- matcher: token-scan IP extraction using find() instead of captures(), avoids PikeVM overhead
-- date: zero-alloc byte scanner for ISO 8601 replaces regex + chrono
-- state: xxh3_64 integrity checksum replaces crc32, reuses existing xxhash dep
-- config: jail name, port, protocol, and bantime_factor validation
-- security: input fuzzing test suite covering injection, spoofing, overflow, and ReDoS vectors
-- benches: criterion benchmark suite for matching pipeline with Python fail2ban comparison script
-- readme: performance benchmarks section with per-stage ns/line measurements
+- matching: faster log matching using pattern pre-filtering
+- matching: faster IP extraction from log lines
+- matching: faster timestamp parsing with lower memory use
+- jails: settings validated at startup with clear error messages
 
 Fix:
-- control: restrict Unix socket and parent directory permissions to owner+group
-- executor: exact token matching for is_banned checks in iptables and nftables backends
-- duration: checked multiplication prevents overflow on large duration values
-- pattern: prefer longer literal prefixes for better AC selectivity
-
-Infra:
-- deps: drop crc32fast, add criterion as dev-dependency
+- security: control socket locked to owner and group only
+- bans: exact IP matching prevents false positives on substring matches
+- jails: large ban durations no longer overflow
 
 Breaking:
-- state: format bumped to v3 (xxh3_64 checksum), v1/v2 state files must be discarded
+- persistence: file format changed, old state files must be discarded

@@ -31,7 +31,7 @@ pub fn parse_duration(s: &str) -> Result<i64> {
         "m" => 60,
         "h" => 3600,
         "d" => 86400,
-        "w" => 604800,
+        "w" => 604_800,
         _ => return Err(Error::config(format!("unknown duration suffix: {suffix}"))),
     };
 
@@ -49,7 +49,7 @@ where
 
     struct DurationVisitor;
 
-    impl<'de> de::Visitor<'de> for DurationVisitor {
+    impl de::Visitor<'_> for DurationVisitor {
         type Value = i64;
 
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

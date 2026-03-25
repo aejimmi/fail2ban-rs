@@ -71,7 +71,7 @@ impl FirewallBackend for ScriptBackend {
         Ok(false)
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "script"
     }
 }

@@ -124,6 +124,7 @@ impl Logger {
 
     /// Log a ban event (no-op without tell).
     #[cfg(not(feature = "tell"))]
+    #[allow(clippy::unused_self)]
     pub fn log_ban(&self, _ip: IpAddr, _jail: &str, _ban_time: i64, _manual: bool) {}
 
     /// Log an unban event.
@@ -146,6 +147,7 @@ impl Logger {
 
     /// Log an unban event (no-op without tell).
     #[cfg(not(feature = "tell"))]
+    #[allow(clippy::unused_self)]
     pub fn log_unban(&self, _ip: IpAddr, _jail: &str, _manual: bool) {}
 
     /// Log daemon startup.
@@ -167,6 +169,7 @@ impl Logger {
 
     /// Log daemon startup (no-op without tell).
     #[cfg(not(feature = "tell"))]
+    #[allow(clippy::unused_self)]
     pub fn log_startup(&self, _jail_count: usize, _restored_bans: usize) {}
 
     /// Log config reload.
@@ -187,6 +190,7 @@ impl Logger {
 
     /// Log config reload (no-op without tell).
     #[cfg(not(feature = "tell"))]
+    #[allow(clippy::unused_self)]
     pub fn log_reload(&self, _jail_count: usize) {}
 
     /// Log a firewall error.
@@ -205,6 +209,7 @@ impl Logger {
 
     /// Log a firewall error (no-op without tell).
     #[cfg(not(feature = "tell"))]
+    #[allow(clippy::unused_self)]
     pub fn log_error(&self, _message: &str, _ip: IpAddr, _jail: &str) {}
 
     /// Gracefully close the Tell client on shutdown.
@@ -217,5 +222,6 @@ impl Logger {
 
     /// Gracefully close (no-op without tell).
     #[cfg(not(feature = "tell"))]
+    #[allow(clippy::unused_async)]
     pub async fn close(self) {}
 }

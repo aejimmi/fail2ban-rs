@@ -23,12 +23,16 @@ pub(crate) fn calc_ban_time(base: i64, count: u32, params: &JailParams) -> i64 {
     if !params.bantime_increment || base < 0 {
         return base;
     }
-    let multiplier = if !params.bantime_multipliers.is_empty() {
-        let idx = (count as usize).min(params.bantime_multipliers.len() - 1);
-        params.bantime_multipliers[idx] as f64
-    } else {
+    let multiplier = if params.bantime_multipliers.is_empty() {
         let exp = count.min(20);
         2_f64.powi(exp as i32)
+    } else {
+        let idx = (count as usize).min(params.bantime_multipliers.len() - 1);
+        params
+            .bantime_multipliers
+            .get(idx)
+            .copied()
+            .map_or(1.0, f64::from)
     };
     let effective = (base as f64 * multiplier * params.bantime_factor) as i64;
     if params.bantime_maxtime > 0 {

@@ -102,7 +102,7 @@ pub struct JailConfig {
     )]
     pub ban_time: i64,
 
-    /// Ports to block (e.g. ["22"] or ["80", "443"]).
+    /// Ports to block (e.g. `["22"]` or `["80", "443"]`).
     #[serde(default)]
     pub port: Vec<String>,
 
@@ -163,9 +163,21 @@ pub struct JailConfig {
     #[serde(default)]
     pub webhook: Option<String>,
 
-    /// Which MaxMind databases to query for this jail (e.g. ["asn", "country"])
+    /// Which MaxMind databases to query for this jail (e.g. `["asn", "country"]`).
     #[serde(default)]
-    pub maxmind: Vec<String>,
+    pub maxmind: Vec<MaxmindField>,
+}
+
+/// MaxMind database type selector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MaxmindField {
+    /// GeoLite2-ASN — autonomous system number and organization.
+    Asn,
+    /// GeoLite2-Country — country name.
+    Country,
+    /// GeoLite2-City — city name.
+    City,
 }
 
 /// Firewall backend selection.
@@ -240,7 +252,7 @@ fn default_bantime_factor() -> f64 {
 }
 
 fn default_bantime_maxtime() -> i64 {
-    604800 // 1 week
+    604_800 // 1 week
 }
 
 impl Config {

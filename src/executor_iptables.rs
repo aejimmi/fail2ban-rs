@@ -131,7 +131,7 @@ impl FirewallBackend for IptablesBackend {
         Ok(stdout.split_whitespace().any(|token| token == ip_str))
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "iptables"
     }
 }

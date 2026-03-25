@@ -92,10 +92,10 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
             });
         }
 
-        if !bans.is_empty() {
-            info!(bans = bans.len(), "loaded persisted state");
-        } else {
+        if bans.is_empty() {
             info!("no persisted state found");
+        } else {
+            info!(bans = bans.len(), "loaded persisted state");
         }
         (bans, counts)
     };
@@ -154,7 +154,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
 
     // Spawn watchers with their own cancellation token (for reload).
     let mut watcher_cancel = CancellationToken::new();
-    spawn_watchers(&config, failure_tx.clone(), watcher_cancel.clone())?;
+    spawn_watchers(&config, &failure_tx, &watcher_cancel)?;
 
     // Spawn tracker.
     let tracker_cancel = cancel.child_token();
@@ -216,14 +216,14 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
                 break;
             }
 
-            _ = signal_sighup() => {
+            () = signal_sighup() => {
                 info!("received SIGHUP, reloading config");
                 match reload_config(
                     &config_path,
                     &mut watcher_cancel,
                     &failure_tx_for_reload,
                     &tracker_cmd_tx,
-                    &logger,
+                    logger.as_ref(),
                 ).await {
                     Ok(()) => info!("config reload complete"),
                     Err(e) => error!(error = %e, "config reload failed, keeping old config"),
@@ -231,22 +231,19 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
             }
 
             cmd = control_rx.recv() => {
-                match cmd {
-                    Some(ctrl) => {
-                        let response = handle_control_request(
-                            ctrl.request,
-                            &tracker_cmd_tx,
-                            &config_path,
-                            &mut watcher_cancel,
-                            &failure_tx_for_reload,
-                            &logger,
-                        ).await;
-                        let _ = ctrl.respond.send(response);
-                    }
-                    None => {
-                        info!("control channel closed");
-                        break;
-                    }
+                if let Some(ctrl) = cmd {
+                    let response = handle_control_request(
+                        ctrl.request,
+                        &tracker_cmd_tx,
+                        &config_path,
+                        &mut watcher_cancel,
+                        &failure_tx_for_reload,
+                        logger.as_ref(),
+                    ).await;
+                    let _ = ctrl.respond.send(response);
+                } else {
+                    info!("control channel closed");
+                    break;
                 }
             }
         }
@@ -265,8 +262,8 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
 
 fn spawn_watchers(
     config: &Config,
-    failure_tx: mpsc::Sender<Failure>,
-    cancel: CancellationToken,
+    failure_tx: &mpsc::Sender<Failure>,
+    cancel: &CancellationToken,
 ) -> crate::error::Result<()> {
     for (name, jail) in config.enabled_jails() {
         let matcher = if jail.ignoreregex.is_empty() {
@@ -321,7 +318,7 @@ async fn reload_config(
     watcher_cancel: &mut CancellationToken,
     failure_tx: &mpsc::Sender<Failure>,
     tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
-    logger: &Option<Logger>,
+    logger: Option<&Logger>,
 ) -> crate::error::Result<()> {
     // Parse and validate new config.
     let new_config = Config::from_file(config_path)?;
@@ -332,7 +329,7 @@ async fn reload_config(
 
     // Spawn new watchers with fresh token.
     let new_cancel = CancellationToken::new();
-    spawn_watchers(&new_config, failure_tx.clone(), new_cancel.clone())?;
+    spawn_watchers(&new_config, failure_tx, &new_cancel)?;
     *watcher_cancel = new_cancel;
 
     // Update tracker jail configs.
@@ -364,7 +361,7 @@ async fn handle_control_request(
     config_path: &std::path::Path,
     watcher_cancel: &mut CancellationToken,
     failure_tx: &mpsc::Sender<Failure>,
-    logger: &Option<Logger>,
+    logger: Option<&Logger>,
 ) -> Response {
     match request {
         Request::Status => Response::ok("fail2ban-rs is running"),
@@ -475,7 +472,7 @@ async fn handle_control_request(
 
 #[cfg(unix)]
 async fn signal_sighup() {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut stream = match signal(SignalKind::hangup()) {
         Ok(s) => s,
         Err(e) => {

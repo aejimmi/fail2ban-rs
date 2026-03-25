@@ -114,7 +114,7 @@ pub async fn run(socket_path: &Path, tx: mpsc::Sender<ControlCmd>, cancel: Cance
 
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => {
+            () = cancel.cancelled() => {
                 info!("control socket shutting down");
                 let _ = std::fs::remove_file(socket_path);
                 break;

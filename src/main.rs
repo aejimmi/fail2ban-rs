@@ -109,6 +109,7 @@ enum Command {
     ListFilters,
 
     /// Show configured MaxMind databases
+    #[cfg(feature = "maxmind")]
     ListMaxmind,
 }
 
@@ -195,14 +196,15 @@ async fn main() -> Result<()> {
             dry_run(&config, &log, jail.as_deref())?;
         }
 
-        Command::GenConfig { service } => match fail2ban_rs::filters::find(&service) {
-            Some(template) => print!("{}", fail2ban_rs::filters::gen_config(template)),
-            None => {
+        Command::GenConfig { service } => {
+            if let Some(template) = fail2ban_rs::filters::find(&service) {
+                print!("{}", fail2ban_rs::filters::gen_config(template));
+            } else {
                 eprintln!("Unknown service: {service}");
                 eprintln!("Available: {}", available_filters());
                 std::process::exit(1);
             }
-        },
+        }
 
         Command::ListFilters => {
             for f in fail2ban_rs::filters::FILTERS {
@@ -210,33 +212,23 @@ async fn main() -> Result<()> {
             }
         }
 
+        #[cfg(feature = "maxmind")]
         Command::ListMaxmind => {
             let config = Config::from_file(&cli.config).context("failed to load configuration")?;
-            println!("Available MaxMind databases (from config):");
-            println!(
-                "  ASN:     {}",
-                config
-                    .global
-                    .maxmind_asn
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "Not configured".to_string())
-            );
-            println!(
-                "  Country: {}",
-                config
-                    .global
-                    .maxmind_country
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "Not configured".to_string())
-            );
-            println!(
-                "  City:    {}",
-                config
-                    .global
-                    .maxmind_city
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "Not configured".to_string())
-            );
+            println!("MaxMind databases:");
+            for (label, path) in [
+                ("ASN", &config.global.maxmind_asn),
+                ("Country", &config.global.maxmind_country),
+                ("City", &config.global.maxmind_city),
+            ] {
+                match path {
+                    Some(p) => match fail2ban_rs::tracker_maxmind::load_db(p, label) {
+                        Some(_) => println!("  {label:8} {:<50} OK", p.display()),
+                        None => println!("  {label:8} {:<50} FAILED", p.display()),
+                    },
+                    None => println!("  {label:8} Not configured"),
+                }
+            }
         }
     }
 
@@ -377,12 +369,9 @@ fn print_bans_table(response: &Response) {
         Response::Ok {
             data: Some(data), ..
         } => {
-            let bans = match data.get("bans").and_then(|v| v.as_array()) {
-                Some(b) => b,
-                None => {
-                    println!("No active bans.");
-                    return;
-                }
+            let Some(bans) = data.get("bans").and_then(|v| v.as_array()) else {
+                println!("No active bans.");
+                return;
             };
             if bans.is_empty() {
                 println!("No active bans.");
@@ -398,7 +387,7 @@ fn print_bans_table(response: &Response) {
                     let ip = b.get("ip")?.as_str()?;
                     let jail = b.get("jail")?.as_str()?;
                     let banned_at = b.get("banned_at")?.as_i64()?;
-                    let expires_at = b.get("expires_at").and_then(|v| v.as_i64());
+                    let expires_at = b.get("expires_at").and_then(serde_json::Value::as_i64);
                     Some((ip.to_string(), jail.to_string(), banned_at, expires_at))
                 })
                 .collect();
@@ -416,21 +405,15 @@ fn print_bans_table(response: &Response) {
             );
 
             for (ip, jail, banned_at, expires_at) in &rows {
-                let banned_dt = chrono::DateTime::from_timestamp(*banned_at, 0)
-                    .map(|dt| dt.format("%d %b %H:%M").to_string())
-                    .unwrap_or_else(|| "-".to_string());
+                let banned_dt = chrono::DateTime::from_timestamp(*banned_at, 0).map_or_else(
+                    || "-".to_string(),
+                    |dt| dt.format("%d %b %H:%M").to_string(),
+                );
                 let expires = match expires_at {
                     Some(exp) => format_relative(exp - now),
                     None => "permanent".to_string(),
                 };
-                println!(
-                    "{:<6}  {:<ip_w$}  {:<17}  {}",
-                    jail,
-                    ip,
-                    banned_dt,
-                    expires,
-                    ip_w = ip_width
-                );
+                println!("{jail:<6}  {ip:<ip_width$}  {banned_dt:<17}  {expires}",);
             }
             println!("\nTotal: {} active ban(s)", rows.len());
         }
@@ -451,8 +434,11 @@ fn print_bans_jsonl(response: &Response) {
                 for b in bans {
                     let jail = b.get("jail").and_then(|v| v.as_str()).unwrap_or("");
                     let ip = b.get("ip").and_then(|v| v.as_str()).unwrap_or("");
-                    let banned_at = b.get("banned_at").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let expires_at = b.get("expires_at").and_then(|v| v.as_i64());
+                    let banned_at = b
+                        .get("banned_at")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0);
+                    let expires_at = b.get("expires_at").and_then(serde_json::Value::as_i64);
                     match expires_at {
                         Some(exp) => println!(
                             r#"{{"jail":"{jail}","ip":"{ip}","banned_at":{banned_at},"expires_at":{exp}}}"#

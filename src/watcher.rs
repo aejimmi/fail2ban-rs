@@ -119,7 +119,7 @@ pub async fn run(
     // Forward failures from blocking reader to the async failure channel.
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => {
+            () = cancel.cancelled() => {
                 info!(jail = %jail_id, "watcher shutting down");
                 break;
             }
@@ -141,6 +141,10 @@ pub async fn run(
 }
 
 /// Blocking file-read loop running on a dedicated thread.
+///
+/// All parameters are passed by value because this function runs on a
+/// `spawn_blocking` thread and the closure must be `'static`.
+#[allow(clippy::needless_pass_by_value)]
 fn read_loop(
     jail_id: String,
     log_path: PathBuf,

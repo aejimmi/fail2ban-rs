@@ -36,7 +36,9 @@ impl CircularTimestamps {
             self.head = (self.head + 1) % cap;
             pos
         };
-        self.buf[write_pos] = ts;
+        if let Some(slot) = self.buf.get_mut(write_pos) {
+            *slot = ts;
+        }
         if self.len < cap {
             self.len += 1;
         }
@@ -52,7 +54,7 @@ impl CircularTimestamps {
         if self.len == 0 {
             return None;
         }
-        Some(self.buf[self.head])
+        self.buf.get(self.head).copied()
     }
 
     /// Returns the newest timestamp, or `None` if empty.
@@ -66,7 +68,7 @@ impl CircularTimestamps {
         } else {
             (self.head + cap - 1) % cap
         };
-        Some(self.buf[idx])
+        self.buf.get(idx).copied()
     }
 
     /// Check if the failure threshold is reached: buffer is full and the

@@ -49,8 +49,7 @@ pub fn literal_prefix(pattern: &str) -> Option<String> {
     ];
     let literal_start = before
         .rfind(|c: char| meta_chars.contains(&c))
-        .map(|pos| pos + 1)
-        .unwrap_or(0);
+        .map_or(0, |pos| pos + 1);
 
     let trailing = &before[literal_start..];
 

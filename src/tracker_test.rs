@@ -24,7 +24,11 @@ fn test_jail_config() -> JailConfig {
         find_time: 600,
         ban_time: 60,
         ignoreself: false,
-        maxmind: vec!["asn".to_string(), "country".to_string(), "city".to_string()],
+        maxmind: vec![
+            crate::config::MaxmindField::Asn,
+            crate::config::MaxmindField::Country,
+            crate::config::MaxmindField::City,
+        ],
         ..JailConfig::default()
     }
 }

@@ -54,10 +54,10 @@ impl JailMatcher {
         // Build individual regexes.
         let regexes: Vec<Regex> = expanded
             .iter()
-            .enumerate()
-            .map(|(i, p)| {
+            .zip(patterns.iter())
+            .map(|(p, orig)| {
                 Regex::new(p).map_err(|e| Error::Regex {
-                    pattern: patterns[i].clone(),
+                    pattern: orig.clone(),
                     source: e,
                 })
             })
@@ -71,7 +71,9 @@ impl JailMatcher {
         for (i, p) in patterns.iter().enumerate() {
             if let Some(prefix) = pattern::literal_prefix(p) {
                 if let Some(pos) = unique_prefixes.iter().position(|x| x == &prefix) {
-                    ac_to_regex[pos].push(i);
+                    if let Some(group) = ac_to_regex.get_mut(pos) {
+                        group.push(i);
+                    }
                 } else {
                     unique_prefixes.push(prefix);
                     ac_to_regex.push(vec![i]);
@@ -117,11 +119,12 @@ impl JailMatcher {
         if let Some(ref ac) = self.ac {
             // Phase 1: AC pre-filter — reject lines without any known prefix.
             let ac_match = ac.find(line)?;
-            let primary = &self.ac_to_regex[ac_match.pattern().as_usize()];
+            let primary = self.ac_to_regex.get(ac_match.pattern().as_usize())?;
 
             // Phase 2: Try only regexes whose AC prefix was found (fast path).
             for &idx in primary {
-                if let Some(m) = self.regexes[idx].find(line)
+                if let Some(regex) = self.regexes.get(idx)
+                    && let Some(m) = regex.find(line)
                     && let Some(ip) = extract_ip(m.as_str())
                 {
                     if self.ignore_regexes.iter().any(|re| re.is_match(line)) {
@@ -141,7 +144,8 @@ impl JailMatcher {
                 if primary.contains(&idx) {
                     continue;
                 }
-                if let Some(m) = self.regexes[idx].find(line)
+                if let Some(regex) = self.regexes.get(idx)
+                    && let Some(m) = regex.find(line)
                     && let Some(ip) = extract_ip(m.as_str())
                 {
                     if self.ignore_regexes.iter().any(|re| re.is_match(line)) {

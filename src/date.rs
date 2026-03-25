@@ -34,39 +34,35 @@ pub struct DateParser {
 impl DateParser {
     /// Create a parser for the given format.
     pub fn new(format: DateFormat) -> Result<Self> {
-        let regex = match format {
-            // ISO 8601 uses zero-alloc byte scanning — no regex needed.
-            DateFormat::Iso8601 => None,
-            _ => {
-                let pattern = match format {
-                    DateFormat::Syslog => r"([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})",
-                    DateFormat::Epoch => r"(\d{10,})",
-                    DateFormat::Common => {
-                        r"(\d{2})/([A-Z][a-z]{2})/(\d{4}):(\d{2}):(\d{2}):(\d{2})"
-                    }
-                    DateFormat::Iso8601 => unreachable!(),
-                };
-                Some(Regex::new(pattern).map_err(|e| Error::Regex {
-                    pattern: pattern.to_string(),
-                    source: e,
-                })?)
-            }
+        // ISO 8601 uses zero-alloc byte scanning — no regex needed.
+        let regex = if format == DateFormat::Iso8601 {
+            None
+        } else {
+            let pattern = match format {
+                DateFormat::Syslog => r"([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})",
+                DateFormat::Epoch => r"(\d{10,})",
+                DateFormat::Common => r"(\d{2})/([A-Z][a-z]{2})/(\d{4}):(\d{2}):(\d{2}):(\d{2})",
+                DateFormat::Iso8601 => unreachable!(),
+            };
+            Some(Regex::new(pattern).map_err(|e| Error::Regex {
+                pattern: pattern.to_string(),
+                source: e,
+            })?)
         };
         Ok(Self { format, regex })
     }
 
     /// Parse a log line and extract a unix timestamp.
     pub fn parse_line(&self, line: &str) -> Option<i64> {
-        match self.format {
-            DateFormat::Iso8601 => scan_iso8601(line.as_bytes()),
-            _ => {
-                let caps = self.regex.as_ref()?.captures(line)?;
-                match self.format {
-                    DateFormat::Syslog => parse_syslog(&caps),
-                    DateFormat::Epoch => parse_epoch(&caps),
-                    DateFormat::Common => parse_common(&caps),
-                    DateFormat::Iso8601 => unreachable!(),
-                }
+        if self.format == DateFormat::Iso8601 {
+            scan_iso8601(line.as_bytes())
+        } else {
+            let caps = self.regex.as_ref()?.captures(line)?;
+            match self.format {
+                DateFormat::Syslog => parse_syslog(&caps),
+                DateFormat::Epoch => parse_epoch(&caps),
+                DateFormat::Common => parse_common(&caps),
+                DateFormat::Iso8601 => unreachable!(),
             }
         }
     }
@@ -118,12 +114,17 @@ fn scan_iso8601(b: &[u8]) -> Option<i64> {
         return None;
     }
     for i in 0..=b.len() - 19 {
-        if b[i + 4] == b'-'
-            && b[i + 7] == b'-'
-            && (b[i + 10] == b'T' || b[i + 10] == b' ')
-            && b[i + 13] == b':'
-            && b[i + 16] == b':'
-        {
+        let Some(window) = b.get(i..i + 19) else {
+            continue;
+        };
+        // SAFETY of indexing: window is exactly 19 bytes from the .get() above.
+        #[allow(clippy::indexing_slicing)]
+        let matches_structure = window[4] == b'-'
+            && window[7] == b'-'
+            && (window[10] == b'T' || window[10] == b' ')
+            && window[13] == b':'
+            && window[16] == b':';
+        if matches_structure {
             let year = parse_4(b, i)?;
             let month = parse_2(b, i + 5)?;
             let day = parse_2(b, i + 8)?;
@@ -144,27 +145,27 @@ fn scan_iso8601(b: &[u8]) -> Option<i64> {
 }
 
 /// Parse a 2-digit decimal number from bytes.
-#[inline(always)]
+#[inline]
 fn parse_2(b: &[u8], pos: usize) -> Option<u32> {
-    let d1 = b[pos].wrapping_sub(b'0');
-    let d2 = b[pos + 1].wrapping_sub(b'0');
+    let d1 = (*b.get(pos)?).wrapping_sub(b'0');
+    let d2 = (*b.get(pos + 1)?).wrapping_sub(b'0');
     if d1 > 9 || d2 > 9 {
         return None;
     }
-    Some(d1 as u32 * 10 + d2 as u32)
+    Some(u32::from(d1) * 10 + u32::from(d2))
 }
 
 /// Parse a 4-digit decimal number from bytes.
-#[inline(always)]
+#[inline]
 fn parse_4(b: &[u8], pos: usize) -> Option<u32> {
-    let d1 = b[pos].wrapping_sub(b'0');
-    let d2 = b[pos + 1].wrapping_sub(b'0');
-    let d3 = b[pos + 2].wrapping_sub(b'0');
-    let d4 = b[pos + 3].wrapping_sub(b'0');
+    let d1 = (*b.get(pos)?).wrapping_sub(b'0');
+    let d2 = (*b.get(pos + 1)?).wrapping_sub(b'0');
+    let d3 = (*b.get(pos + 2)?).wrapping_sub(b'0');
+    let d4 = (*b.get(pos + 3)?).wrapping_sub(b'0');
     if d1 > 9 || d2 > 9 || d3 > 9 || d4 > 9 {
         return None;
     }
-    Some(d1 as u32 * 1000 + d2 as u32 * 100 + d3 as u32 * 10 + d4 as u32)
+    Some(u32::from(d1) * 1000 + u32::from(d2) * 100 + u32::from(d3) * 10 + u32::from(d4))
 }
 
 /// Convert date/time components to Unix timestamp (UTC).
@@ -173,21 +174,21 @@ fn parse_4(b: &[u8], pos: usize) -> Option<u32> {
 /// no branches, no loops, no allocations.
 fn unix_timestamp(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> i64 {
     let y = if month <= 2 {
-        year as i64 - 1
+        i64::from(year) - 1
     } else {
-        year as i64
+        i64::from(year)
     };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = (y - era * 400) as u64;
     let m = if month > 2 {
-        month as u64 - 3
+        u64::from(month) - 3
     } else {
-        month as u64 + 9
+        u64::from(month) + 9
     };
-    let doy = (153 * m + 2) / 5 + day as u64 - 1;
+    let doy = (153 * m + 2) / 5 + u64::from(day) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe as i64 - 719468;
-    days * 86400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64
+    let days = era * 146_097 + doe as i64 - 719_468;
+    days * 86400 + i64::from(hour) * 3600 + i64::from(min) * 60 + i64::from(sec)
 }
 
 fn month_from_abbr(s: &str) -> Option<u32> {

@@ -63,7 +63,7 @@ pub trait FirewallBackend: Send + Sync {
     async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool>;
 
     /// Backend name for logging.
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 }
 
 /// Known system directories to search for firewall binaries.
@@ -110,8 +110,8 @@ pub fn create_backend(backend: &Backend) -> Result<Box<dyn FirewallBackend>> {
 }
 
 /// Create per-jail firewall backends from jail configurations.
-pub fn create_backends(
-    jails: &HashMap<String, JailConfig>,
+pub fn create_backends<S: ::std::hash::BuildHasher>(
+    jails: &HashMap<String, JailConfig, S>,
 ) -> Result<HashMap<String, Box<dyn FirewallBackend>>> {
     jails
         .iter()
@@ -121,9 +121,9 @@ pub fn create_backends(
 }
 
 /// Run the executor task loop.
-pub async fn run(
+pub async fn run<S: ::std::hash::BuildHasher>(
     mut rx: mpsc::Receiver<FirewallCmd>,
-    backends: HashMap<String, Box<dyn FirewallBackend>>,
+    backends: HashMap<String, Box<dyn FirewallBackend>, S>,
     cancel: CancellationToken,
 ) {
     let names: Vec<_> = backends
@@ -134,7 +134,7 @@ pub async fn run(
 
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => {
+            () = cancel.cancelled() => {
                 info!("executor shutting down");
                 break;
             }
@@ -200,11 +200,11 @@ pub async fn run(
 ///
 /// Jails with `reban_on_restart = false` are skipped — their firewall state
 /// persists independently (e.g. ipset).
-pub async fn restore_bans(
+pub async fn restore_bans<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
     bans: &[BanRecord],
-    backends: &HashMap<String, Box<dyn FirewallBackend>>,
+    backends: &HashMap<String, Box<dyn FirewallBackend>, S>,
     now: i64,
-    jail_configs: &HashMap<String, JailConfig>,
+    jail_configs: &HashMap<String, JailConfig, S2>,
 ) -> Vec<BanRecord> {
     let mut restored = Vec::new();
     for ban in bans {
@@ -221,12 +221,9 @@ pub async fn restore_bans(
         {
             continue;
         }
-        let backend = match backends.get(&ban.jail_id) {
-            Some(b) => b,
-            None => {
-                warn!(ip = %ban.ip, jail = %ban.jail_id, "no backend for jail, skipping restore");
-                continue;
-            }
+        let Some(backend) = backends.get(&ban.jail_id) else {
+            warn!(ip = %ban.ip, jail = %ban.jail_id, "no backend for jail, skipping restore");
+            continue;
         };
         if let Err(e) = backend.ban(&ban.ip, &ban.jail_id).await {
             warn!(ip = %ban.ip, jail = %ban.jail_id, error = %e, "failed to restore ban");

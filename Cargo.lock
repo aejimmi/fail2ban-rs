@@ -417,7 +417,6 @@ dependencies = [
  "etchdb",
  "ipnet",
  "maxminddb",
- "memmap2",
  "nix",
  "regex",
  "serde",

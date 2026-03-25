@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ban_calc::{build_jail_params, calc_ban_time, JailParams};
+use crate::ban_calc::{JailParams, build_jail_params, calc_ban_time};
 use crate::config::JailConfig;
 
 fn base_params() -> JailParams {
@@ -51,7 +51,7 @@ fn explicit_multipliers() {
     assert_eq!(calc_ban_time(60, 2, &params), 240); // 60 * 4
     assert_eq!(calc_ban_time(60, 3, &params), 480); // 60 * 8
     assert_eq!(calc_ban_time(60, 4, &params), 960); // 60 * 16
-                                                    // Beyond list length: clamps to last multiplier.
+    // Beyond list length: clamps to last multiplier.
     assert_eq!(calc_ban_time(60, 5, &params), 960); // 60 * 16
     assert_eq!(calc_ban_time(60, 99, &params), 960); // 60 * 16
 }

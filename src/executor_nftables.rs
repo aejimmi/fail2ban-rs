@@ -74,20 +74,20 @@ impl FirewallBackend for NftablesBackend {
         ])
         .await?;
         // Add rules matching ports + set -> reject.
-        if !ports.is_empty() {
-            let port_list = ports.join(",");
-            let rule_v4 = format!("{protocol} dport {{ {port_list} }} ip saddr @{set_name} reject");
-            self.run_nft(&["add", "rule", "inet", "fail2ban-rs", "f2b-chain", &rule_v4])
-                .await?;
-            let rule_v6 = format!("{protocol} dport {{ {port_list} }} ip6 saddr @{set_v6} reject");
-            self.run_nft(&["add", "rule", "inet", "fail2ban-rs", "f2b-chain", &rule_v6])
-                .await?;
-        } else {
+        if ports.is_empty() {
             // No ports specified: match all traffic from banned IPs.
             let rule_v4 = format!("ip saddr @{set_name} reject");
             self.run_nft(&["add", "rule", "inet", "fail2ban-rs", "f2b-chain", &rule_v4])
                 .await?;
             let rule_v6 = format!("ip6 saddr @{set_v6} reject");
+            self.run_nft(&["add", "rule", "inet", "fail2ban-rs", "f2b-chain", &rule_v6])
+                .await?;
+        } else {
+            let port_list = ports.join(",");
+            let rule_v4 = format!("{protocol} dport {{ {port_list} }} ip saddr @{set_name} reject");
+            self.run_nft(&["add", "rule", "inet", "fail2ban-rs", "f2b-chain", &rule_v4])
+                .await?;
+            let rule_v6 = format!("{protocol} dport {{ {port_list} }} ip6 saddr @{set_v6} reject");
             self.run_nft(&["add", "rule", "inet", "fail2ban-rs", "f2b-chain", &rule_v6])
                 .await?;
         }
@@ -152,7 +152,7 @@ impl FirewallBackend for NftablesBackend {
         Ok(stdout.split_whitespace().any(|token| token == ip_str))
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "nftables"
     }
 }

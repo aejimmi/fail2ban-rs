@@ -23,6 +23,8 @@ pub mod regex_tool;
 pub mod server;
 pub mod state;
 pub mod tracker;
+#[cfg(feature = "maxmind")]
+pub mod tracker_maxmind;
 pub mod watcher;
 #[cfg(feature = "systemd")]
 pub mod watcher_journal;

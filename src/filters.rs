@@ -25,10 +25,10 @@ pub const FILTERS: &[FilterTemplate] = &[
         log_path: "/var/log/auth.log",
         date_format: "syslog",
         patterns: &[
-            r#"sshd\[\d+\]: Failed password for .* from <HOST> port \d+"#,
-            r#"sshd\[\d+\]: Invalid user .* from <HOST> port \d+"#,
-            r#"sshd\[\d+\]: Connection closed by authenticating user .* <HOST> port \d+"#,
-            r#"sshd\[\d+\]: Disconnected from authenticating user .* <HOST> port \d+"#,
+            r"sshd\[\d+\]: Failed password for .* from <HOST> port \d+",
+            r"sshd\[\d+\]: Invalid user .* from <HOST> port \d+",
+            r"sshd\[\d+\]: Connection closed by authenticating user .* <HOST> port \d+",
+            r"sshd\[\d+\]: Disconnected from authenticating user .* <HOST> port \d+",
         ],
     },
     FilterTemplate {
@@ -37,9 +37,9 @@ pub const FILTERS: &[FilterTemplate] = &[
         log_path: "/var/log/nginx/error.log",
         date_format: "common",
         patterns: &[
-            r#"no user/password was provided for basic authentication.*client: <HOST>"#,
-            r#"user .* was not found.*client: <HOST>"#,
-            r#"user .* password mismatch.*client: <HOST>"#,
+            r"no user/password was provided for basic authentication.*client: <HOST>",
+            r"user .* was not found.*client: <HOST>",
+            r"user .* password mismatch.*client: <HOST>",
         ],
     },
     FilterTemplate {
@@ -55,8 +55,8 @@ pub const FILTERS: &[FilterTemplate] = &[
         log_path: "/var/log/mail.log",
         date_format: "syslog",
         patterns: &[
-            r#"postfix/smtpd\[\d+\]: warning: .*\[<HOST>\]: SASL .* authentication failed"#,
-            r#"postfix/smtpd\[\d+\]: NOQUEUE: reject: RCPT from .*\[<HOST>\]"#,
+            r"postfix/smtpd\[\d+\]: warning: .*\[<HOST>\]: SASL .* authentication failed",
+            r"postfix/smtpd\[\d+\]: NOQUEUE: reject: RCPT from .*\[<HOST>\]",
         ],
     },
     FilterTemplate {
@@ -65,8 +65,8 @@ pub const FILTERS: &[FilterTemplate] = &[
         log_path: "/var/log/mail.log",
         date_format: "syslog",
         patterns: &[
-            r#"dovecot: .*auth failed.*rip=<HOST>"#,
-            r#"dovecot: .*Aborted login.*rip=<HOST>"#,
+            r"dovecot: .*auth failed.*rip=<HOST>",
+            r"dovecot: .*Aborted login.*rip=<HOST>",
         ],
     },
     FilterTemplate {
@@ -82,7 +82,7 @@ pub const FILTERS: &[FilterTemplate] = &[
         log_path: "/var/log/asterisk/messages",
         date_format: "iso8601",
         patterns: &[
-            r#"NOTICE.* <HOST> failed to authenticate"#,
+            r"NOTICE.* <HOST> failed to authenticate",
             r#"SECURITY.* SecurityEvent="FailedACL".*RemoteAddress.*<HOST>"#,
         ],
     },
@@ -91,7 +91,7 @@ pub const FILTERS: &[FilterTemplate] = &[
         description: "MySQL/MariaDB authentication failures",
         log_path: "/var/log/mysql/error.log",
         date_format: "iso8601",
-        patterns: &[r#"Access denied for user .* from '<HOST>'"#],
+        patterns: &[r"Access denied for user .* from '<HOST>'"],
     },
     FilterTemplate {
         name: "apache-auth",
@@ -99,9 +99,9 @@ pub const FILTERS: &[FilterTemplate] = &[
         log_path: "/var/log/apache2/error.log",
         date_format: "common",
         patterns: &[
-            r#"client <HOST>.*user .* authentication failure"#,
-            r#"client <HOST>.*user .* not found"#,
-            r#"client <HOST>.*password mismatch"#,
+            r"client <HOST>.*user .* authentication failure",
+            r"client <HOST>.*user .* not found",
+            r"client <HOST>.*password mismatch",
         ],
     },
     FilterTemplate {
@@ -109,63 +109,63 @@ pub const FILTERS: &[FilterTemplate] = &[
         description: "Apache requests for known exploit and scanner paths",
         log_path: "/var/log/apache2/error.log",
         date_format: "common",
-        patterns: &[r#"client <HOST>.*File does not exist:.*/(wp-login|xmlrpc|\.env|phpmyadmin)"#],
+        patterns: &[r"client <HOST>.*File does not exist:.*/(wp-login|xmlrpc|\.env|phpmyadmin)"],
     },
     FilterTemplate {
         name: "vaultwarden",
         description: "Vaultwarden (Bitwarden-compatible) login failures",
         log_path: "/var/log/vaultwarden.log",
         date_format: "iso8601",
-        patterns: &[r#"Username or password is incorrect.*IP: <HOST>"#],
+        patterns: &[r"Username or password is incorrect.*IP: <HOST>"],
     },
     FilterTemplate {
         name: "bitwarden",
         description: "Bitwarden self-hosted login failures",
         log_path: "bwdata/logs/identity/log.txt",
         date_format: "iso8601",
-        patterns: &[r#"Failed login attempt.*<HOST>"#],
+        patterns: &[r"Failed login attempt.*<HOST>"],
     },
     FilterTemplate {
         name: "proxmox",
         description: "Proxmox VE authentication failures",
         log_path: "/var/log/daemon.log",
         date_format: "syslog",
-        patterns: &[r#"pvedaemon\[.*authentication failure; rhost=<HOST>"#],
+        patterns: &[r"pvedaemon\[.*authentication failure; rhost=<HOST>"],
     },
     FilterTemplate {
         name: "gitlab",
         description: "GitLab authentication failures",
         log_path: "/var/log/gitlab/gitlab-rails/application.log",
         date_format: "iso8601",
-        patterns: &[r#"Failed Login:.*ip=<HOST>"#],
+        patterns: &[r"Failed Login:.*ip=<HOST>"],
     },
     FilterTemplate {
         name: "grafana",
         description: "Grafana login failures",
         log_path: "/var/log/grafana/grafana.log",
         date_format: "iso8601",
-        patterns: &[r#"Unauthorized.*<HOST>"#],
+        patterns: &[r"Unauthorized.*<HOST>"],
     },
     FilterTemplate {
         name: "haproxy",
         description: "HAProxy HTTP authentication failures",
         log_path: "/var/log/haproxy.log",
         date_format: "syslog",
-        patterns: &[r#"<HOST>:\d+ .*\b401\b"#],
+        patterns: &[r"<HOST>:\d+ .*\b401\b"],
     },
     FilterTemplate {
         name: "drupal",
         description: "Drupal CMS authentication failures",
         log_path: "/var/log/syslog",
         date_format: "syslog",
-        patterns: &[r#"drupal.*Login attempt failed from <HOST>"#],
+        patterns: &[r"drupal.*Login attempt failed from <HOST>"],
     },
     FilterTemplate {
         name: "traefik",
         description: "Traefik reverse proxy authentication failures",
         log_path: "/var/log/access.log",
         date_format: "common",
-        patterns: &[r#"<HOST> .* \d+ 401 "#],
+        patterns: &[r"<HOST> .* \d+ 401 "],
     },
     FilterTemplate {
         name: "openvpn",
@@ -173,8 +173,8 @@ pub const FILTERS: &[FilterTemplate] = &[
         log_path: "/var/log/syslog",
         date_format: "syslog",
         patterns: &[
-            r#"ovpn-.*<HOST>:\d+ TLS Auth Error"#,
-            r#"ovpn-.*<HOST>:\d+.*AUTH_FAILED"#,
+            r"ovpn-.*<HOST>:\d+ TLS Auth Error",
+            r"ovpn-.*<HOST>:\d+.*AUTH_FAILED",
         ],
     },
 ];
@@ -186,13 +186,14 @@ pub fn find(name: &str) -> Option<&'static FilterTemplate> {
 
 /// Generate a TOML jail configuration for a service.
 pub fn gen_config(template: &FilterTemplate) -> String {
+    use std::fmt::Write;
     let mut out = format!("[jail.{}]\n", template.name);
-    out.push_str(&format!("# {}\n", template.description));
-    out.push_str(&format!("log_path = \"{}\"\n", template.log_path));
-    out.push_str(&format!("date_format = \"{}\"\n", template.date_format));
+    let _ = writeln!(out, "# {}", template.description);
+    let _ = writeln!(out, "log_path = \"{}\"", template.log_path);
+    let _ = writeln!(out, "date_format = \"{}\"", template.date_format);
     out.push_str("filter = [\n");
     for pattern in template.patterns {
-        out.push_str(&format!("    '{}',\n", pattern));
+        let _ = writeln!(out, "    '{pattern}',");
     }
     out.push_str("]\n");
     out
