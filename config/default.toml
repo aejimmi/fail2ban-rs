@@ -1,69 +1,31 @@
-# fail2ban-rs default configuration
-# Copy this file and adjust for your environment.
-#
-# Additional config files in config.d/*.toml are merged alphabetically.
+# Reference: https://github.com/aejimmi/fail2ban-rs
 
 [global]
-# Path to persist ban state across restarts
 state_file = "/var/lib/fail2ban-rs/state.bin"
-
-# Unix socket for CLI communication
 socket_path = "/var/run/fail2ban-rs/fail2ban-rs.sock"
-
-# Logging level: trace, debug, info, warn, error
 log_level = "info"
-
-# Bounded channel capacity between tasks
-channel_size = 1024
-
-# Remote logging via Tell (optional)
-# [logging]
-# destination = "tell"
-# endpoint = "ingest.tell.rs:9090"
-# api_key = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
-# level = "info"
-# service = "fail2ban-rs"
 
 [jail.sshd]
 enabled = true
 log_path = "/var/log/auth.log"
 date_format = "syslog"
-
-# Patterns to match — use <HOST> for the IP capture group
 filter = [
     'sshd\[\d+\]: Failed password for .* from <HOST>',
     'sshd\[\d+\]: Invalid user .* from <HOST>',
     'sshd\[\d+\]: Connection closed by authenticating user .* <HOST>',
 ]
-
-# Ports to block (empty = all traffic from banned IPs)
 port = ["22"]
 protocol = "tcp"
-
-# Ban after this many failures within find_time
 max_retry = 5
-
-# Time window to count failures (seconds or "10m", "1h", etc.)
 find_time = "10m"
-
-# Ban duration (seconds or duration string; -1 = permanent)
 ban_time = "1h"
-
-# Firewall backend: nftables, iptables, or script
 backend = "nftables"
 
-# Regex patterns — lines matching these are ignored even if failregex hits
-# ignoreregex = ['Accepted']
+# Ban time escalation for repeat offenders
+bantime_increment = true
+bantime_multipliers = [1, 2, 4, 8, 16, 32, 64]
+bantime_maxtime = "1w"
 
 # IPs/CIDRs to never ban
 ignoreip = ["127.0.0.1/8", "::1/128"]
-
-# Auto-detect and ignore this machine's own IPs
 ignoreself = true
-
-# Re-issue ban commands on restart (default true).
-# Set to false when the firewall persists bans independently (e.g. ipset).
-# reban_on_restart = false
-
-# Webhook URL — POST JSON on ban events (optional)
-# webhook = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"

@@ -6,17 +6,16 @@ fail2ban is a 20-year-old Python codebase that works, but requires a Python runt
 
 fail2ban-rs eliminates all of that:
 
-- **Single 3.2 MB binary** — no Python, no runtime, no interpreter startup overhead
+- **Single ~3 MB binary** — no Python, no runtime, no interpreter startup overhead
 - **~6 MB RSS in production** — constant memory regardless of log volume
-- **Zero locks** — three async tasks connected by channels, single-owner state (Python fail2ban uses 9+ thread locks)
+- **Zero locks** — three-layer async pipeline connected by channels, single-owner state (Python fail2ban uses 9+ thread locks)
 - **5x faster per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection
 - **No shell execution** — nftables/iptables backends exec directly via argv, no `shell=True` (script backend uses `sh -c` but substitutes only validated `IpAddr` values)
 - **6.6x faster startup** — 3.7ms vs 25.8ms (measured with hyperfine, 50 runs)
-- **67% less code** — 4,200 lines of Rust vs 12,500 lines of Python
 - **Constant-size state** — flat binary snapshot of active bans only. No SQLite database growing on disk for years
 - **~1 MB at 10K active bans** — ring buffers store 5 timestamps per IP, not matched log lines
 
-Everything else you'd expect: nftables/iptables/script backends, ban time escalation, config overlays, hot reload via SIGHUP, 19 built-in filters, systemd journal support.
+Everything else you'd expect: nftables/iptables/script backends, ban time escalation, config overlays, hot reload via SIGHUP, 88 built-in filters, systemd journal support.
 
 ## Install
 
@@ -33,7 +32,7 @@ cargo install fail2ban-rs
 ```
 
 ```bash
-nano /etc/fail2ban-rs/config.toml     # edit config
+vi /etc/fail2ban-rs/config.toml       # edit config
 systemctl enable fail2ban-rs          # start on boot
 systemctl start fail2ban-rs           # start
 fail2ban-rs status                    # check status
@@ -112,19 +111,26 @@ Additional `.toml` files in `config.d/` next to your main config are merged alph
 
 ## Built-in filters
 
-`fail2ban-rs gen-config <name>` generates a jail config for any of these:
+`fail2ban-rs gen-config <name>` generates a jail config for any of **88 built-in services**, including:
 
 `sshd` `nginx-auth` `nginx-botsearch` `postfix` `dovecot` `vsftpd` `asterisk` `mysqld` `apache-auth` `apache-botsearch` `vaultwarden` `bitwarden` `proxmox` `gitlab` `grafana` `haproxy` `drupal` `traefik` `openvpn`
+
+Run `fail2ban-rs list-filters` for the full list.
 
 ## CLI
 
 ```bash
 fail2ban-rs status                              # show all jails and bans
+fail2ban-rs list-bans                           # sorted table of active bans (--json for JSONL)
+fail2ban-rs stats                               # daemon statistics
 fail2ban-rs ban 1.2.3.4 sshd                    # manually ban an IP
 fail2ban-rs unban 1.2.3.4 sshd                  # manually unban
+fail2ban-rs dry-run /var/log/auth.log -j sshd   # analyze a log without banning
 fail2ban-rs regex --pattern '...' --line '...'  # test a pattern
 fail2ban-rs gen-config sshd                     # generate jail config
-systemctl reload fail2ban-rs                    # hot reload (SIGHUP)
+fail2ban-rs list-filters                        # list all 88 built-in filters
+fail2ban-rs reload                              # hot reload via control socket
+systemctl reload fail2ban-rs                    # hot reload via SIGHUP
 ```
 
 ## Testing
@@ -185,7 +191,6 @@ cargo test
 - Recidive — repeat offenders auto-escalate to longer, all-port bans across jails
 - Ban actions — pluggable post-ban hooks for AbuseIPDB, Cloudflare edge blocking, and notifications
 - IP enrichment — whois, reverse DNS, and X-ARF abuse reports on ban events
-- ipset backend — O(1) lookups for large ban lists
 - BSD firewalls — pf and ipfw backends for OpenBSD/FreeBSD
 - Threat feed blocking — import blocklists to block known attackers proactively
 - Cross-server ban sharing — one node's ban propagates across the cluster
