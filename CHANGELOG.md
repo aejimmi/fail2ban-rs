@@ -1,10 +1,12 @@
 # Changelog
 
+## v1.2.1
 
+- fix(detect/journal): resolve double mutable borrow, drop systemd feature flag
 - installer: no longer attempts to delete the system temp directory when run on an unsupported OS
 - installer: non-Linux systems get a clear unsupported-OS error before the root check
 
-## v1.1.0
+## v1.2.0
 
 New:
 - geo: country, city, and ASN info on ban events using local MaxMind databases

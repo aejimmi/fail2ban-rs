@@ -200,8 +200,7 @@ pub enum LogBackend {
     /// Read from a log file (default).
     #[default]
     File,
-    /// Read from the systemd journal (requires `systemd` feature).
-    #[cfg(feature = "systemd")]
+    /// Read from the systemd journal via `journalctl`.
     Systemd,
 }
 

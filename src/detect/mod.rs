@@ -10,7 +10,6 @@ pub mod filters;
 /// IP allowlist and local-address detection.
 pub mod ignore;
 /// Systemd journal log source.
-#[cfg(feature = "systemd")]
 pub mod journal;
 /// Two-phase log matching engine.
 pub mod matcher;

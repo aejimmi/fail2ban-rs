@@ -278,7 +278,6 @@ fn spawn_watchers(
         let cancel = cancel.child_token();
         let name = name.to_string();
 
-        #[cfg(feature = "systemd")]
         if jail.log_backend == crate::config::LogBackend::Systemd {
             let journalmatch = jail.journalmatch.clone();
             tokio::spawn(async move {
