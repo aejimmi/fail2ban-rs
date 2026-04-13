@@ -5,8 +5,8 @@
 # Prerequisites:
 #   brew install zig             (macOS cross-compilation)
 #   cargo install cargo-zigbuild
-#   rustup target add x86_64-unknown-linux-gnu
-#   rustup target add aarch64-unknown-linux-gnu
+#   rustup target add x86_64-unknown-linux-musl
+#   rustup target add aarch64-unknown-linux-musl
 
 set -e
 
@@ -38,8 +38,8 @@ rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
 TARGETS=(
-    "x86_64-unknown-linux-gnu:linux-amd64"
-    "aarch64-unknown-linux-gnu:linux-arm64"
+    "x86_64-unknown-linux-musl:linux-amd64"
+    "aarch64-unknown-linux-musl:linux-arm64"
 )
 
 for target_pair in "${TARGETS[@]}"; do

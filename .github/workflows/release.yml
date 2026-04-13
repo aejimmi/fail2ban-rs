@@ -22,8 +22,10 @@ jobs:
         include:
           - os_arch: linux-amd64
             runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
           - os_arch: linux-arm64
             runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
 
     steps:
       - name: Checkout
@@ -36,6 +38,16 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -43,16 +55,21 @@ jobs:
           prefix-key: "release-${{ matrix.os_arch }}"
 
       - name: Build
-        run: cargo build --release
+        run: cargo zigbuild --release --target ${{ matrix.rust_target }}
 
       - name: Strip binary
-        run: strip target/release/fail2ban-rs
+        run: |
+          if command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip target/${{ matrix.rust_target }}/release/fail2ban-rs
+          elif command -v strip >/dev/null 2>&1; then
+            strip target/${{ matrix.rust_target }}/release/fail2ban-rs
+          fi
 
       - name: Package
         run: |
           ARTIFACT="fail2ban-rs-${VERSION}-${{ matrix.os_arch }}"
           mkdir -p dist/${ARTIFACT}
-          cp target/release/fail2ban-rs dist/${ARTIFACT}/
+          cp target/${{ matrix.rust_target }}/release/fail2ban-rs dist/${ARTIFACT}/
           cp dist/fail2ban-rs.service dist/${ARTIFACT}/
           cp config/default.toml dist/${ARTIFACT}/config.toml
           cp LICENSE dist/${ARTIFACT}/ 2>/dev/null || true
