@@ -49,6 +49,9 @@ jobs:
         with:
           tool: cargo-zigbuild
 
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.rust_target }}
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.2
+
+- fix: build Linux release binaries with musl for glibc compatibility
+
 ## v1.2.1
 
 - fix(detect/journal): resolve double mutable borrow, drop systemd feature flag
