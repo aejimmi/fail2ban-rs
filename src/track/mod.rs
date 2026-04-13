@@ -392,6 +392,7 @@ async fn execute_ban(ip: IpAddr, jail_id: &str, ban_time: i64, manual: bool, s: 
         jail_id: jail_id.to_string(),
         banned_at: now,
         expires_at,
+        done: None,
     };
     if s.executor_tx.send(cmd).await.is_err() {
         warn!("executor channel closed");

@@ -75,6 +75,7 @@ pub struct JailConfig {
     pub enabled: bool,
 
     /// Path to the log file to monitor.
+    #[serde(default)]
     pub log_path: PathBuf,
 
     /// Date format preset for timestamp extraction.
@@ -351,6 +352,12 @@ impl Config {
 
         if !jail.enabled {
             return Ok(());
+        }
+
+        if jail.log_backend == LogBackend::File && jail.log_path.as_os_str().is_empty() {
+            return Err(Error::config(format!(
+                "jail '{name}': log_path is required when log_backend = \"file\""
+            )));
         }
 
         if jail.filter.is_empty() {

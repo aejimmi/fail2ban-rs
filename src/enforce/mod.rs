@@ -34,6 +34,7 @@ pub enum FirewallCmd {
         jail_id: String,
         banned_at: i64,
         expires_at: Option<i64>,
+        done: Option<oneshot::Sender<Result<()>>>,
     },
     /// Unban an IP in the firewall.
     Unban { ip: IpAddr, jail_id: String },
@@ -147,14 +148,21 @@ pub async fn run<S: ::std::hash::BuildHasher>(
             }
             cmd = rx.recv() => {
                 match cmd {
-                    Some(FirewallCmd::Ban { ip, jail_id, banned_at, expires_at }) => {
+                    Some(FirewallCmd::Ban { ip, jail_id, banned_at, expires_at, done }) => {
                         info!(%ip, jail = %jail_id, "banning");
-                        if let Some(backend) = backends.get(&jail_id) {
+                        let result = if let Some(backend) = backends.get(&jail_id) {
                             if let Err(e) = backend.ban(&ip, &jail_id).await {
                                 error!(%ip, jail = %jail_id, error = %e, "ban failed");
+                                Err(e)
+                            } else {
+                                Ok(())
                             }
                         } else {
                             warn!(%ip, jail = %jail_id, "no backend for jail");
+                            Ok(())
+                        };
+                        if let Some(done) = done {
+                            let _ = done.send(result);
                         }
                         let _ = (banned_at, expires_at);
                     }
@@ -377,6 +385,7 @@ mod tests {
             jail_id: "sshd".to_string(),
             banned_at: 1000,
             expires_at: Some(2000),
+            done: None,
         })
         .await
         .unwrap();
@@ -646,6 +655,7 @@ mod tests {
             jail_id: "sshd".to_string(),
             banned_at: 1000,
             expires_at: Some(2000),
+            done: None,
         })
         .await
         .unwrap();
@@ -655,6 +665,7 @@ mod tests {
             jail_id: "nginx".to_string(),
             banned_at: 1000,
             expires_at: Some(2000),
+            done: None,
         })
         .await
         .unwrap();

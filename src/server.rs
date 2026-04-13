@@ -20,9 +20,18 @@ use crate::enforce::{self, FirewallCmd};
 use crate::logging::Logger;
 use crate::track::TrackerCmd;
 use crate::track::persist::BanState;
+use crate::track::state::BanRecord;
+
+struct WatcherPlan {
+    name: String,
+    jail: crate::config::JailConfig,
+    matcher: JailMatcher,
+    date_parser: DateParser,
+    ignore_list: IgnoreList,
+}
 
 /// Run the daemon with the given configuration.
-pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<()> {
+pub async fn run(mut config: Config, config_path: PathBuf) -> crate::error::Result<()> {
     let cancel = CancellationToken::new();
 
     // Initialize remote logging (no-op if not configured).
@@ -126,25 +135,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
         enforce::run(executor_rx, backends, executor_cancel).await;
     });
 
-    // Initialize firewall rules for each jail and await confirmation.
-    for (name, jail) in config.enabled_jails() {
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-        let cmd = enforce::FirewallCmd::InitJail {
-            jail_id: name.to_string(),
-            ports: jail.port.clone(),
-            protocol: jail.protocol.clone(),
-            done: done_tx,
-        };
-        if executor_tx.send(cmd).await.is_err() {
-            tracing::warn!(jail = %name, "failed to send init command");
-            continue;
-        }
-        match done_rx.await {
-            Ok(Ok(())) => info!(jail = %name, "firewall initialized"),
-            Ok(Err(e)) => error!(jail = %name, error = %e, "firewall init failed"),
-            Err(_) => tracing::warn!(jail = %name, "executor dropped init response"),
-        }
-    }
+    init_firewalls(&executor_tx, config.enabled_jails()).await?;
 
     // Log startup event.
     if let Some(t) = logger.as_ref() {
@@ -153,8 +144,9 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
     }
 
     // Spawn watchers with their own cancellation token (for reload).
+    let watcher_plan = build_watcher_plan(&config)?;
     let mut watcher_cancel = CancellationToken::new();
-    spawn_watchers(&config, &failure_tx, &watcher_cancel)?;
+    spawn_watchers(watcher_plan, &failure_tx, &watcher_cancel);
 
     // Spawn tracker.
     let tracker_cancel = cancel.child_token();
@@ -193,24 +185,9 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
     // Main select loop.
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("received SIGINT, shutting down");
-                // Tear down firewall rules for each jail and await confirmation.
-                for (name, _) in config.enabled_jails() {
-                    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-                    let cmd = enforce::FirewallCmd::TeardownJail {
-                        jail_id: name.to_string(),
-                        done: done_tx,
-                    };
-                    if executor_tx.send(cmd).await.is_err() {
-                        break;
-                    }
-                    match done_rx.await {
-                        Ok(Ok(())) => info!(jail = %name, "firewall torn down"),
-                        Ok(Err(e)) => tracing::warn!(jail = %name, error = %e, "teardown failed"),
-                        Err(_) => break,
-                    }
-                }
+            _ = shutdown_signal() => {
+                info!("received shutdown signal, shutting down");
+                teardown_firewalls(&executor_tx, config.enabled_jails().map(|(name, _)| name)).await;
                 cancel.cancel();
                 watcher_cancel.cancel();
                 break;
@@ -220,9 +197,11 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
                 info!("received SIGHUP, reloading config");
                 match reload_config(
                     &config_path,
+                    &executor_tx,
+                    &tracker_cmd_tx,
+                    &mut config,
                     &mut watcher_cancel,
                     &failure_tx_for_reload,
-                    &tracker_cmd_tx,
                     logger.as_ref(),
                 ).await {
                     Ok(()) => info!("config reload complete"),
@@ -236,6 +215,8 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
                         ctrl.request,
                         &tracker_cmd_tx,
                         &config_path,
+                        &executor_tx,
+                        &mut config,
                         &mut watcher_cancel,
                         &failure_tx_for_reload,
                         logger.as_ref(),
@@ -260,33 +241,46 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
     Ok(())
 }
 
+fn build_watcher_plan(config: &Config) -> crate::error::Result<Vec<WatcherPlan>> {
+    config
+        .enabled_jails()
+        .map(|(name, jail)| {
+            let matcher = if jail.ignoreregex.is_empty() {
+                JailMatcher::new(&jail.filter)?
+            } else {
+                JailMatcher::with_ignoreregex(&jail.filter, &jail.ignoreregex)?
+            };
+            let date_parser = DateParser::new(jail.date_format)?;
+            let ignore_list = IgnoreList::new(&jail.ignoreip, jail.ignoreself)?;
+            Ok(WatcherPlan {
+                name: name.to_string(),
+                jail: jail.clone(),
+                matcher,
+                date_parser,
+                ignore_list,
+            })
+        })
+        .collect()
+}
+
 fn spawn_watchers(
-    config: &Config,
+    watcher_plan: Vec<WatcherPlan>,
     failure_tx: &mpsc::Sender<Failure>,
     cancel: &CancellationToken,
-) -> crate::error::Result<()> {
-    for (name, jail) in config.enabled_jails() {
-        let matcher = if jail.ignoreregex.is_empty() {
-            JailMatcher::new(&jail.filter)?
-        } else {
-            JailMatcher::with_ignoreregex(&jail.filter, &jail.ignoreregex)?
-        };
-        let date_parser = DateParser::new(jail.date_format)?;
-        let ignore_list = IgnoreList::new(&jail.ignoreip, jail.ignoreself)?;
-
+) {
+    for plan in watcher_plan {
         let tx = failure_tx.clone();
         let cancel = cancel.child_token();
-        let name = name.to_string();
 
-        if jail.log_backend == crate::config::LogBackend::Systemd {
-            let journalmatch = jail.journalmatch.clone();
+        if plan.jail.log_backend == crate::config::LogBackend::Systemd {
+            let journalmatch = plan.jail.journalmatch.clone();
             tokio::spawn(async move {
                 crate::detect::journal::run(
-                    name,
+                    plan.name,
                     journalmatch,
-                    matcher,
-                    date_parser,
-                    ignore_list,
+                    plan.matcher,
+                    plan.date_parser,
+                    plan.ignore_list,
                     tx,
                     cancel,
                 )
@@ -295,40 +289,71 @@ fn spawn_watchers(
             continue;
         }
 
-        let log_path = jail.log_path.clone();
+        let log_path = plan.jail.log_path.clone();
         tokio::spawn(async move {
             crate::detect::watcher::run(
-                name,
+                plan.name,
                 log_path,
-                matcher,
-                date_parser,
-                ignore_list,
+                plan.matcher,
+                plan.date_parser,
+                plan.ignore_list,
                 tx,
                 cancel,
             )
             .await;
         });
     }
-    Ok(())
 }
 
 async fn reload_config(
     config_path: &std::path::Path,
+    executor_tx: &mpsc::Sender<FirewallCmd>,
+    tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
+    current_config: &mut Config,
     watcher_cancel: &mut CancellationToken,
     failure_tx: &mpsc::Sender<Failure>,
-    tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
     logger: Option<&Logger>,
 ) -> crate::error::Result<()> {
     // Parse and validate new config.
     let new_config = Config::from_file(config_path)?;
+    let new_watcher_plan = build_watcher_plan(&new_config)?;
+    let active_bans = query_active_bans(tracker_cmd_tx).await?;
 
-    // Cancel old watchers.
+    // Apply new firewall rules before touching the current watcher/tracker state.
+    teardown_firewalls(
+        executor_tx,
+        current_config.enabled_jails().map(|(name, _)| name),
+    )
+    .await;
+    if let Err(e) = init_firewalls(executor_tx, new_config.enabled_jails()).await {
+        let rollback_err =
+            rollback_firewalls(executor_tx, current_config, &new_config, &active_bans).await;
+        let message = if let Some(rollback_err) = rollback_err {
+            format!("{e}; rollback failed: {rollback_err}")
+        } else {
+            e.to_string()
+        };
+        return Err(crate::error::Error::firewall(message));
+    }
+
+    if let Err(e) = reapply_bans(executor_tx, &active_bans, &new_config).await {
+        let rollback_err =
+            rollback_firewalls(executor_tx, current_config, &new_config, &active_bans).await;
+        let message = if let Some(rollback_err) = rollback_err {
+            format!("{e}; rollback failed: {rollback_err}")
+        } else {
+            e.to_string()
+        };
+        return Err(crate::error::Error::firewall(message));
+    }
+
+    // Cancel old watchers only after the new config is known-good.
     watcher_cancel.cancel();
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Spawn new watchers with fresh token.
     let new_cancel = CancellationToken::new();
-    spawn_watchers(&new_config, failure_tx, &new_cancel)?;
+    spawn_watchers(new_watcher_plan, failure_tx, &new_cancel);
     *watcher_cancel = new_cancel;
 
     // Update tracker jail configs.
@@ -351,13 +376,136 @@ async fn reload_config(
         t.log_reload(jail_count);
     }
 
+    *current_config = new_config;
+
     Ok(())
+}
+
+async fn init_firewalls<'a>(
+    executor_tx: &mpsc::Sender<FirewallCmd>,
+    jails: impl Iterator<Item = (&'a str, &'a crate::config::JailConfig)>,
+) -> crate::error::Result<()> {
+    for (name, jail) in jails {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let cmd = enforce::FirewallCmd::InitJail {
+            jail_id: name.to_string(),
+            ports: jail.port.clone(),
+            protocol: jail.protocol.clone(),
+            done: done_tx,
+        };
+        if executor_tx.send(cmd).await.is_err() {
+            return Err(crate::error::Error::ChannelClosed);
+        }
+        match done_rx.await {
+            Ok(Ok(())) => info!(jail = %name, "firewall initialized"),
+            Ok(Err(e)) => {
+                error!(jail = %name, error = %e, "firewall init failed");
+                return Err(e);
+            }
+            Err(_) => return Err(crate::error::Error::ChannelClosed),
+        }
+    }
+
+    Ok(())
+}
+
+async fn teardown_firewalls<'a>(
+    executor_tx: &mpsc::Sender<FirewallCmd>,
+    jail_names: impl Iterator<Item = &'a str>,
+) {
+    for name in jail_names {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let cmd = enforce::FirewallCmd::TeardownJail {
+            jail_id: name.to_string(),
+            done: done_tx,
+        };
+        if executor_tx.send(cmd).await.is_err() {
+            break;
+        }
+        match done_rx.await {
+            Ok(Ok(())) => info!(jail = %name, "firewall torn down"),
+            Ok(Err(e)) => tracing::warn!(jail = %name, error = %e, "teardown failed"),
+            Err(_) => break,
+        }
+    }
+}
+
+async fn query_active_bans(
+    tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
+) -> crate::error::Result<Vec<BanRecord>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tracker_cmd_tx
+        .send(TrackerCmd::QueryBans { respond: tx })
+        .await
+        .map_err(|_| crate::error::Error::ChannelClosed)?;
+    rx.await.map_err(|_| crate::error::Error::ChannelClosed)
+}
+
+async fn reapply_bans(
+    executor_tx: &mpsc::Sender<FirewallCmd>,
+    active_bans: &[BanRecord],
+    config: &Config,
+) -> crate::error::Result<()> {
+    let enabled_jails: std::collections::HashSet<&str> =
+        config.enabled_jails().map(|(name, _)| name).collect();
+
+    for ban in active_bans {
+        if !enabled_jails.contains(ban.jail_id.as_str()) {
+            continue;
+        }
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let cmd = FirewallCmd::Ban {
+            ip: ban.ip,
+            jail_id: ban.jail_id.clone(),
+            banned_at: ban.banned_at,
+            expires_at: ban.expires_at,
+            done: Some(done_tx),
+        };
+        executor_tx
+            .send(cmd)
+            .await
+            .map_err(|_| crate::error::Error::ChannelClosed)?;
+        match done_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err(crate::error::Error::ChannelClosed),
+        }
+    }
+
+    Ok(())
+}
+
+async fn rollback_firewalls(
+    executor_tx: &mpsc::Sender<FirewallCmd>,
+    current_config: &Config,
+    attempted_config: &Config,
+    active_bans: &[BanRecord],
+) -> Option<crate::error::Error> {
+    teardown_firewalls(
+        executor_tx,
+        attempted_config.enabled_jails().map(|(name, _)| name),
+    )
+    .await;
+    teardown_firewalls(
+        executor_tx,
+        current_config.enabled_jails().map(|(name, _)| name),
+    )
+    .await;
+    if let Err(e) = init_firewalls(executor_tx, current_config.enabled_jails()).await {
+        return Some(e);
+    }
+    if let Err(e) = reapply_bans(executor_tx, active_bans, current_config).await {
+        return Some(e);
+    }
+    None
 }
 
 async fn handle_control_request(
     request: Request,
     tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
     config_path: &std::path::Path,
+    executor_tx: &mpsc::Sender<FirewallCmd>,
+    config: &mut Config,
     watcher_cancel: &mut CancellationToken,
     failure_tx: &mpsc::Sender<Failure>,
     logger: Option<&Logger>,
@@ -437,9 +585,11 @@ async fn handle_control_request(
         Request::Reload => {
             match reload_config(
                 config_path,
+                executor_tx,
+                tracker_cmd_tx,
+                config,
                 watcher_cancel,
                 failure_tx,
-                tracker_cmd_tx,
                 logger,
             )
             .await
@@ -483,9 +633,41 @@ async fn signal_sighup() {
     stream.recv().await;
 }
 
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigint = match signal(SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to register SIGINT handler");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+    let mut sigterm = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to register SIGTERM handler");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+
+    tokio::select! {
+        _ = sigint.recv() => {}
+        _ = sigterm.recv() => {}
+    }
+}
+
 #[cfg(not(unix))]
 async fn signal_sighup() {
     std::future::pending::<()>().await;
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]
