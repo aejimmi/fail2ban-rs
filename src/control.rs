@@ -76,22 +76,42 @@ pub struct ControlCmd {
     pub respond: oneshot::Sender<Response>,
 }
 
-/// Run the control socket listener.
-pub async fn run(socket_path: &Path, tx: mpsc::Sender<ControlCmd>, cancel: CancellationToken) {
-    // Remove stale socket file.
+/// Remove any stale socket and ensure the parent directory exists with
+/// owner-only+group traversal permissions (`0o750`).
+fn prepare_socket_path(socket_path: &Path) {
+    // Removing a nonexistent stale socket is expected and harmless.
     let _ = std::fs::remove_file(socket_path);
 
-    // Ensure parent directory exists with restricted permissions.
-    if let Some(parent) = socket_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o750));
+    let Some(parent) = socket_path.parent() else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        warn!(phase = "startup", error = %e, "control socket parent dir create failed");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o750)) {
+            warn!(phase = "startup", error = %e, "control socket parent dir permissions failed");
         }
     }
+}
 
-    let listener = match UnixListener::bind(socket_path) {
+/// Bind the control socket. The bind→chmod gap is not closed with `umask`
+/// because umask is process-global and racing tasks (WAL/state file creation)
+/// would inherit it; instead the parent directory's `0o750` mode — applied
+/// before bind in `prepare_socket_path` — gates access during the window,
+/// and the explicit `set_permissions` below tightens the socket itself.
+fn bind_socket(socket_path: &Path) -> std::io::Result<UnixListener> {
+    UnixListener::bind(socket_path)
+}
+
+/// Run the control socket listener.
+pub async fn run(socket_path: &Path, tx: mpsc::Sender<ControlCmd>, cancel: CancellationToken) {
+    prepare_socket_path(socket_path);
+
+    let listener = match bind_socket(socket_path) {
         Ok(l) => l,
         Err(e) => {
             error!(
@@ -104,7 +124,8 @@ pub async fn run(socket_path: &Path, tx: mpsc::Sender<ControlCmd>, cancel: Cance
         }
     };
 
-    // Restrict socket to owner+group (prevent other local users from connecting).
+    // Restrict the socket to owner+group so no other local user can connect;
+    // the parent dir's 0o750 covers the moment between bind and this chmod.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -151,10 +172,38 @@ pub async fn run(socket_path: &Path, tx: mpsc::Sender<ControlCmd>, cancel: Cance
     }
 }
 
+/// Reject connections from peers that are neither `root` nor the daemon's own
+/// effective UID. Prevents an unprivileged local user with directory access
+/// from driving the control socket. Linux-only (uses `SO_PEERCRED`); a no-op on
+/// other platforms, where the daemon is not run in production.
+#[cfg(target_os = "linux")]
+fn check_peer_cred(stream: &tokio::net::UnixStream) -> Result<()> {
+    use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
+
+    let cred = getsockopt(stream, PeerCredentials)
+        .map_err(|e| Error::protocol(format!("peer credential lookup failed: {e}")))?;
+    let peer_uid = cred.uid();
+    let my_uid = nix::unistd::geteuid().as_raw();
+    if peer_uid != 0 && peer_uid != my_uid {
+        warn!(
+            peer_uid,
+            daemon_uid = my_uid,
+            "control socket: rejecting unauthorized peer"
+        );
+        return Err(Error::protocol(format!(
+            "unauthorized control peer uid {peer_uid}"
+        )));
+    }
+    Ok(())
+}
+
 async fn handle_connection(
     mut stream: tokio::net::UnixStream,
     tx: mpsc::Sender<ControlCmd>,
 ) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    check_peer_cred(&stream)?;
+
     // Read length prefix.
     let len = stream
         .read_u32_le()
@@ -228,6 +277,13 @@ pub async fn send_request(socket_path: &Path, request: &Request) -> Result<Respo
         .await
         .map_err(|e| Error::protocol(format!("read response length: {e}")))?;
 
+    // Cap the daemon-supplied length so a compromised or buggy daemon cannot
+    // make the client allocate unbounded memory. Same 64 KiB limit the server
+    // enforces on inbound requests.
+    if len > 1024 * 64 {
+        return Err(Error::protocol(format!("response too large: {len}")));
+    }
+
     let mut buf = vec![0u8; len as usize];
     stream
         .read_exact(&mut buf)
@@ -247,207 +303,5 @@ pub async fn send_request(socket_path: &Path, request: &Request) -> Result<Respo
     clippy::unwrap_used,
     clippy::needless_pass_by_value
 )]
-mod tests {
-    use tokio::sync::mpsc;
-    use tokio_util::sync::CancellationToken;
-
-    use crate::control::{self, ControlCmd, Request, Response};
-
-    #[tokio::test]
-    async fn request_response_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let sock_path = dir.path().join("test.sock");
-
-        let (tx, mut rx) = mpsc::channel::<ControlCmd>(16);
-        let cancel = CancellationToken::new();
-
-        let sock = sock_path.clone();
-        let cancel_clone = cancel.clone();
-        let server = tokio::spawn(async move {
-            control::run(&sock, tx, cancel_clone).await;
-        });
-
-        // Give server time to bind.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Spawn a handler that responds to Status requests.
-        let handler = tokio::spawn(async move {
-            if let Some(cmd) = rx.recv().await {
-                match cmd.request {
-                    Request::Status => {
-                        let _ = cmd.respond.send(Response::ok("running"));
-                    }
-                    _ => {
-                        let _ = cmd.respond.send(Response::error("unexpected"));
-                    }
-                }
-            }
-        });
-
-        // Send a status request.
-        let response = control::send_request(&sock_path, &Request::Status)
-            .await
-            .unwrap();
-
-        match response {
-            Response::Ok { message, .. } => {
-                assert_eq!(message.unwrap(), "running");
-            }
-            Response::Error { message } => panic!("unexpected error: {message}"),
-        }
-
-        cancel.cancel();
-        handler.await.unwrap();
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn ban_request_serialization() {
-        let req = Request::Ban {
-            ip: "1.2.3.4".parse().unwrap(),
-            jail: "sshd".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("ban"));
-        assert!(json.contains("1.2.3.4"));
-
-        let parsed: Request = serde_json::from_str(&json).unwrap();
-        match parsed {
-            Request::Ban { ip, jail } => {
-                assert_eq!(ip.to_string(), "1.2.3.4");
-                assert_eq!(jail, "sshd");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[tokio::test]
-    async fn unban_request_serialization() {
-        let req = Request::Unban {
-            ip: "10.0.0.1".parse().unwrap(),
-            jail: "nginx".to_string(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: Request = serde_json::from_str(&json).unwrap();
-        match parsed {
-            Request::Unban { ip, jail } => {
-                assert_eq!(ip.to_string(), "10.0.0.1");
-                assert_eq!(jail, "nginx");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[tokio::test]
-    async fn connect_to_nonexistent_socket() {
-        let result = control::send_request(
-            std::path::Path::new("/tmp/nonexistent-fail2ban-rs-test.sock"),
-            &Request::Status,
-        )
-        .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("connect"), "got: {err}");
-    }
-
-    #[tokio::test]
-    async fn all_request_variants_through_socket() {
-        let dir = tempfile::tempdir().unwrap();
-        let sock_path = dir.path().join("test.sock");
-
-        let (tx, mut rx) = mpsc::channel::<ControlCmd>(16);
-        let cancel = CancellationToken::new();
-
-        let sock = sock_path.clone();
-        let cancel_clone = cancel.clone();
-        tokio::spawn(async move {
-            control::run(&sock, tx, cancel_clone).await;
-        });
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Handler that responds to everything.
-        let handler = tokio::spawn(async move {
-            while let Some(cmd) = rx.recv().await {
-                let response = match cmd.request {
-                    Request::Status => Response::ok("up"),
-                    Request::ListBans => Response::ok_data(serde_json::json!({"bans": []})),
-                    Request::Ban { ip, jail } => Response::ok(format!("banned {ip} in {jail}")),
-                    Request::Unban { ip, jail } => {
-                        Response::ok(format!("unbanned {ip} from {jail}"))
-                    }
-                    Request::Reload => Response::ok("reloaded"),
-                    Request::Stats => Response::ok_data(serde_json::json!({"uptime": 42})),
-                };
-                let _ = cmd.respond.send(response);
-            }
-        });
-
-        // Test each variant.
-        let resp = control::send_request(&sock_path, &Request::Status)
-            .await
-            .unwrap();
-        assert!(matches!(resp, Response::Ok { .. }));
-
-        let resp = control::send_request(&sock_path, &Request::ListBans)
-            .await
-            .unwrap();
-        assert!(matches!(resp, Response::Ok { .. }));
-
-        let resp = control::send_request(
-            &sock_path,
-            &Request::Ban {
-                ip: "1.2.3.4".parse().unwrap(),
-                jail: "sshd".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-        assert!(matches!(resp, Response::Ok { .. }));
-
-        let resp = control::send_request(
-            &sock_path,
-            &Request::Unban {
-                ip: "1.2.3.4".parse().unwrap(),
-                jail: "sshd".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-        assert!(matches!(resp, Response::Ok { .. }));
-
-        let resp = control::send_request(&sock_path, &Request::Reload)
-            .await
-            .unwrap();
-        assert!(matches!(resp, Response::Ok { .. }));
-
-        cancel.cancel();
-        handler.abort();
-    }
-
-    #[test]
-    fn response_ok_data_has_no_message() {
-        let data = serde_json::json!({"count": 5});
-        let resp = Response::ok_data(data);
-        let json = serde_json::to_string(&resp).unwrap();
-        // message should be absent (skip_serializing_if).
-        assert!(!json.contains("message"), "got: {json}");
-        assert!(json.contains("count"));
-    }
-
-    #[test]
-    fn reload_request_serialization() {
-        let req = Request::Reload;
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: Request = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, Request::Reload));
-    }
-
-    #[test]
-    fn list_bans_request_serialization() {
-        let req = Request::ListBans;
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: Request = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, Request::ListBans));
-    }
-}
+#[path = "control_test.rs"]
+mod control_test;

@@ -7,10 +7,48 @@ use std::net::IpAddr;
 
 use tracing::warn;
 
+/// Returns `true` only if `url` uses an `http://` or `https://` scheme.
+///
+/// This guards against scheme laundering: without it, `curl` would happily
+/// accept `file://`, `gopher://`, `dict://`, etc. Validation belongs at the
+/// config layer too, but this backend never trusts its caller.
+#[must_use]
+fn is_http_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+/// Build the `curl` argument vector for a webhook POST.
+///
+/// The `--` terminator guarantees `url` is always treated as a positional
+/// argument, never as an option — so a URL beginning with `-` (e.g.
+/// `-o/etc/cron.d/x`) cannot be laundered into a curl flag.
+#[must_use]
+fn curl_args<'a>(body: &'a str, url: &'a str) -> Vec<&'a str> {
+    vec![
+        "-s",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--max-time",
+        "10",
+        "-d",
+        body,
+        "--",
+        url,
+    ]
+}
+
 /// Fire a webhook notification for a ban event.
 ///
 /// Spawns a `curl` subprocess in the background. Returns immediately.
+/// Non-`http(s)` URLs are refused and logged without spawning anything.
 pub fn notify_ban(url: &str, ip: IpAddr, jail: &str, ban_time: i64) {
+    if !is_http_url(url) {
+        warn!(url = %url, "webhook: refusing non-http(s) URL");
+        return;
+    }
+
     let payload = serde_json::json!({
         "event": "ban",
         "ip": ip.to_string(),
@@ -30,18 +68,7 @@ pub fn notify_ban(url: &str, ip: IpAddr, jail: &str, ban_time: i64) {
     let url = url.to_string();
     tokio::spawn(async move {
         let result = tokio::process::Command::new("curl")
-            .args([
-                "-s",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-m",
-                "10",
-                "-d",
-                &body,
-                &url,
-            ])
+            .args(curl_args(&body, &url))
             .output()
             .await;
 
@@ -59,7 +86,14 @@ pub fn notify_ban(url: &str, ip: IpAddr, jail: &str, ban_time: i64) {
 }
 
 /// Fire a webhook notification for an unban event.
+///
+/// Non-`http(s)` URLs are refused and logged without spawning anything.
 pub fn notify_unban(url: &str, ip: IpAddr, jail: &str) {
+    if !is_http_url(url) {
+        warn!(url = %url, "webhook: refusing non-http(s) URL");
+        return;
+    }
+
     let payload = serde_json::json!({
         "event": "unban",
         "ip": ip.to_string(),
@@ -78,18 +112,7 @@ pub fn notify_unban(url: &str, ip: IpAddr, jail: &str) {
     let url = url.to_string();
     tokio::spawn(async move {
         let result = tokio::process::Command::new("curl")
-            .args([
-                "-s",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-m",
-                "10",
-                "-d",
-                &body,
-                &url,
-            ])
+            .args(curl_args(&body, &url))
             .output()
             .await;
 
@@ -100,34 +123,6 @@ pub fn notify_unban(url: &str, ip: IpAddr, jail: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    // Webhook functions spawn tokio tasks that call curl, so we can only
-    // test that they don't panic. The actual HTTP POST is not tested here
-    // (would need a test server).
-
-    use std::net::{IpAddr, Ipv4Addr};
-
-    #[tokio::test]
-    async fn notify_ban_does_not_panic() {
-        // Use an invalid URL — the curl call will fail, but it should
-        // not panic or block.
-        crate::webhook::notify_ban(
-            "http://127.0.0.1:1/test",
-            IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
-            "sshd",
-            3600,
-        );
-        // Give the spawned task a moment to run.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-
-    #[tokio::test]
-    async fn notify_unban_does_not_panic() {
-        crate::webhook::notify_unban(
-            "http://127.0.0.1:1/test",
-            IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8)),
-            "nginx",
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-}
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[path = "webhook_test.rs"]
+mod webhook_test;

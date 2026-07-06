@@ -8,54 +8,107 @@ use thiserror::Error;
 /// Convenience alias used throughout the library.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The library-wide error type covering every fallible subsystem.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Configuration is invalid (bad value, missing field, parse failure).
     #[error("config error: {message}")]
-    Config { message: String },
+    Config {
+        /// Human-readable description of what was wrong with the config.
+        message: String,
+    },
 
+    /// The requested config file does not exist on disk.
     #[error("config file not found: {path}")]
-    ConfigNotFound { path: PathBuf },
+    ConfigNotFound {
+        /// Path that was expected to hold the config file.
+        path: PathBuf,
+    },
 
+    /// An I/O operation failed; `context` describes what was being attempted.
     #[error("io error: {context}")]
     Io {
+        /// Description of the operation that failed (e.g. "reading file").
         context: String,
+        /// The underlying I/O error.
         #[source]
         source: std::io::Error,
     },
 
+    /// A regular expression failed to compile.
     #[error("invalid regex pattern: {pattern}")]
     Regex {
+        /// The pattern that could not be compiled.
         pattern: String,
+        /// The underlying regex compilation error.
         #[source]
         source: regex::Error,
     },
 
+    /// A firewall backend operation failed.
     #[error("firewall error: {message}")]
-    Firewall { message: String },
+    Firewall {
+        /// Human-readable description of the firewall failure.
+        message: String,
+    },
 
-    #[error("etch error: {0}")]
-    Etch(#[from] etchdb::Error),
+    /// A persistence-layer operation failed.
+    ///
+    /// Owns no third-party types so a semver bump of the storage backend cannot
+    /// break this crate's public API. The underlying error's detail is folded
+    /// into `message` at the call site.
+    #[error("persistence error: {message}")]
+    Persistence {
+        /// Context plus the underlying persistence error's `Display` output.
+        message: String,
+    },
 
+    /// The persisted state's on-disk schema is incompatible with this build.
+    #[error("incompatible state schema: {message}")]
+    SchemaMismatch {
+        /// Human-readable description of the schema incompatibility.
+        message: String,
+    },
+
+    /// A control-protocol message was malformed or could not be handled.
     #[error("protocol error: {message}")]
-    Protocol { message: String },
+    Protocol {
+        /// Human-readable description of the protocol failure.
+        message: String,
+    },
 
+    /// A channel used for inter-task communication was closed unexpectedly.
     #[error("channel closed")]
     ChannelClosed,
 
+    /// A ban was requested for an IP that is already banned in the jail.
     #[error("ip already banned: {ip} in jail {jail}")]
-    AlreadyBanned { ip: IpAddr, jail: String },
+    AlreadyBanned {
+        /// The IP address that was already banned.
+        ip: IpAddr,
+        /// The jail the IP is banned in.
+        jail: String,
+    },
 
+    /// An unban was requested for an IP that is not banned in the jail.
     #[error("ip not banned: {ip} in jail {jail}")]
-    NotBanned { ip: IpAddr, jail: String },
+    NotBanned {
+        /// The IP address that was not banned.
+        ip: IpAddr,
+        /// The jail the IP was expected to be banned in.
+        jail: String,
+    },
 }
 
 impl Error {
+    /// Construct a [`Error::Config`] from any string-like message.
     pub fn config(message: impl Into<String>) -> Self {
         Self::Config {
             message: message.into(),
         }
     }
 
+    /// Construct a [`Error::Io`] wrapping `source` with a describing `context`.
     pub fn io(context: impl Into<String>, source: std::io::Error) -> Self {
         Self::Io {
             context: context.into(),
@@ -63,127 +116,39 @@ impl Error {
         }
     }
 
+    /// Construct a [`Error::Firewall`] from any string-like message.
     pub fn firewall(message: impl Into<String>) -> Self {
         Self::Firewall {
             message: message.into(),
         }
     }
 
+    /// Construct a [`Error::Protocol`] from any string-like message.
     pub fn protocol(message: impl Into<String>) -> Self {
         Self::Protocol {
+            message: message.into(),
+        }
+    }
+
+    /// Construct a [`Error::Persistence`] from any string-like message.
+    ///
+    /// Callers fold the underlying backend error's `Display` into `message`
+    /// (e.g. `format!("opening WAL: {e}")`) so detail is retained without
+    /// leaking the backend's error type into this crate's public API.
+    pub fn persistence(message: impl Into<String>) -> Self {
+        Self::Persistence {
+            message: message.into(),
+        }
+    }
+
+    /// Construct a [`Error::SchemaMismatch`] from any string-like message.
+    pub fn schema_mismatch(message: impl Into<String>) -> Self {
+        Self::SchemaMismatch {
             message: message.into(),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
-
-    use crate::error::Error;
-
-    #[test]
-    fn config_error_display() {
-        let err = Error::config("bad value");
-        assert_eq!(err.to_string(), "config error: bad value");
-    }
-
-    #[test]
-    fn config_not_found_display() {
-        let err = Error::ConfigNotFound {
-            path: "/tmp/missing.toml".into(),
-        };
-        assert!(err.to_string().contains("/tmp/missing.toml"));
-    }
-
-    #[test]
-    fn io_error_display() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
-        let err = Error::io("reading file", io_err);
-        let msg = err.to_string();
-        assert!(msg.contains("reading file"), "got: {msg}");
-    }
-
-    #[test]
-    fn io_error_source() {
-        use std::error::Error as StdError;
-        let io_err = std::io::Error::other("inner");
-        let err = Error::io("outer", io_err);
-        let source = err.source().expect("should have source");
-        assert!(source.to_string().contains("inner"));
-    }
-
-    #[test]
-    #[allow(clippy::invalid_regex)]
-    fn regex_error_display() {
-        let re_err = regex::Regex::new("[invalid").unwrap_err();
-        let err = Error::Regex {
-            pattern: "[invalid".to_string(),
-            source: re_err,
-        };
-        assert!(err.to_string().contains("[invalid"));
-    }
-
-    #[test]
-    fn firewall_error_display() {
-        let err = Error::firewall("nft not found");
-        assert!(err.to_string().contains("nft not found"));
-    }
-
-    #[test]
-    fn etch_error_display() {
-        let etch_err = etchdb::Error::WalCorrupted {
-            offset: 0,
-            reason: "test corruption".to_string(),
-        };
-        let err = Error::Etch(etch_err);
-        assert!(err.to_string().contains("etch error"));
-    }
-
-    #[test]
-    fn protocol_error_display() {
-        let err = Error::protocol("malformed JSON");
-        assert!(err.to_string().contains("malformed JSON"));
-    }
-
-    #[test]
-    fn channel_closed_display() {
-        let err = Error::ChannelClosed;
-        assert_eq!(err.to_string(), "channel closed");
-    }
-
-    #[test]
-    fn already_banned_display() {
-        let err = Error::AlreadyBanned {
-            ip: IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
-            jail: "sshd".to_string(),
-        };
-        let msg = err.to_string();
-        assert!(msg.contains("1.2.3.4"));
-        assert!(msg.contains("sshd"));
-    }
-
-    #[test]
-    fn not_banned_display() {
-        let err = Error::NotBanned {
-            ip: IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8)),
-            jail: "nginx".to_string(),
-        };
-        let msg = err.to_string();
-        assert!(msg.contains("5.6.7.8"));
-        assert!(msg.contains("nginx"));
-    }
-
-    #[test]
-    #[allow(clippy::unnecessary_wraps)]
-    fn result_type_alias_works() {
-        fn returns_ok() -> crate::error::Result<i32> {
-            Ok(42)
-        }
-        fn returns_err() -> crate::error::Result<i32> {
-            Err(Error::config("test"))
-        }
-        assert!(returns_ok().is_ok());
-        assert!(returns_err().is_err());
-    }
-}
+#[path = "error_test.rs"]
+mod error_test;

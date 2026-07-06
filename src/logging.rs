@@ -12,6 +12,20 @@ use tell::{Tell, TellConfig, TellConfigBuilder, props};
 #[cfg(feature = "tell")]
 use tracing::{info, warn};
 
+/// Recognized severity level strings accepted in `logging.level`.
+///
+/// Kept feature-independent so config validation can reject unknown levels
+/// even when the `tell` feature is disabled.
+const VALID_LEVELS: &[&str] = &["debug", "info", "warn", "warning", "error"];
+
+/// Whether `s` names a recognized severity level (case-insensitive).
+///
+/// Used by config validation to reject typo'd `logging.level` values instead
+/// of silently degrading them to the default.
+pub fn is_valid_level(s: &str) -> bool {
+    VALID_LEVELS.contains(&s.to_lowercase().as_str())
+}
+
 /// Minimum severity level for log filtering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg(feature = "tell")]
@@ -227,71 +241,5 @@ impl Logger {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::config::LoggingConfig;
-    use crate::logging::Logger;
-
-    #[test]
-    fn init_none_without_destination() {
-        let config = LoggingConfig {
-            destination: None,
-            endpoint: None,
-            api_key: Some("a1b2c3d4e5f60718293a4b5c6d7e8f90".to_string()),
-            level: None,
-            service: None,
-            format: None,
-        };
-        assert!(Logger::init(&config).is_none());
-    }
-
-    #[test]
-    fn init_none_without_api_key() {
-        let config = LoggingConfig {
-            destination: Some("tell".to_string()),
-            endpoint: None,
-            api_key: None,
-            level: None,
-            service: None,
-            format: None,
-        };
-        assert!(Logger::init(&config).is_none());
-    }
-
-    #[cfg(feature = "tell")]
-    #[test]
-    fn init_none_with_invalid_key() {
-        let config = LoggingConfig {
-            destination: Some("tell".to_string()),
-            endpoint: None,
-            api_key: Some("not-a-valid-hex-key".to_string()),
-            level: None,
-            service: None,
-            format: None,
-        };
-        // Invalid API key should not panic, just return None.
-        assert!(Logger::init(&config).is_none());
-    }
-
-    #[test]
-    fn init_none_with_unsupported_destination() {
-        let config = LoggingConfig {
-            destination: Some("datadog".to_string()),
-            endpoint: None,
-            api_key: Some("a1b2c3d4e5f60718293a4b5c6d7e8f90".to_string()),
-            level: None,
-            service: None,
-            format: None,
-        };
-        assert!(Logger::init(&config).is_none());
-    }
-
-    #[test]
-    fn default_logging_config() {
-        let config = LoggingConfig::default();
-        assert!(config.destination.is_none());
-        assert!(config.api_key.is_none());
-        assert!(config.endpoint.is_none());
-        assert!(config.level.is_none());
-        assert!(config.service.is_none());
-    }
-}
+#[path = "logging_test.rs"]
+mod logging_test;

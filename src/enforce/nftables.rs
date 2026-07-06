@@ -3,8 +3,30 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+use tracing::debug;
+
 use crate::enforce::FirewallBackend;
 use crate::error::{Error, Result};
+
+/// Build the set-definition fragment for a jail set.
+///
+/// The `timeout` flag is required so elements can carry a kernel-side expiry,
+/// giving bans a backstop that self-clears even if the tracker dies.
+fn set_block(elem_type: &str) -> String {
+    format!("{{ type {elem_type}; flags timeout; }}")
+}
+
+/// Build the `nft` element fragment for an IP, with a `timeout Ns` clause when
+/// `expires_at` is set. A past/near expiry is clamped to a minimum of 1s.
+fn element_spec(ip: &IpAddr, expires_at: Option<i64>, now: i64) -> String {
+    match expires_at {
+        Some(exp) => {
+            let secs = (exp - now).max(1);
+            format!("{{ {ip} timeout {secs}s }}")
+        }
+        None => format!("{{ {ip} }}"),
+    }
+}
 
 /// Nftables backend — uses `nft` command resolved at startup.
 pub struct NftablesBackend {
@@ -59,7 +81,7 @@ impl FirewallBackend for NftablesBackend {
             "inet",
             "fail2ban-rs",
             &set_name,
-            "{ type ipv4_addr; flags interval; }",
+            &set_block("ipv4_addr"),
         ])
         .await?;
         // Create IPv6 set.
@@ -70,7 +92,7 @@ impl FirewallBackend for NftablesBackend {
             "inet",
             "fail2ban-rs",
             &set_v6,
-            "{ type ipv6_addr; flags interval; }",
+            &set_block("ipv6_addr"),
         ])
         .await?;
         // Add rules matching ports + set -> reject.
@@ -113,30 +135,44 @@ impl FirewallBackend for NftablesBackend {
         Ok(())
     }
 
+    async fn teardown_full(&self, _jail: &str) -> Result<()> {
+        // Deleting the shared table removes every jail's sets, the base chain,
+        // and all rules in one shot — nothing leaks after daemon shutdown.
+        self.run_nft(&["delete", "table", "inet", "fail2ban-rs"])
+            .await
+            .ok();
+        Ok(())
+    }
+
     async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+        self.ban_with_timeout(ip, jail, None, 0).await
+    }
+
+    async fn ban_with_timeout(
+        &self,
+        ip: &IpAddr,
+        jail: &str,
+        expires_at: Option<i64>,
+        now: i64,
+    ) -> Result<()> {
         let set_name = format!("f2b-{jail}");
-        self.run_nft(&[
-            "add",
-            "element",
-            "inet",
-            "fail2ban-rs",
-            &set_name,
-            &format!("{{{ip}}}"),
-        ])
-        .await
+        let elem = element_spec(ip, expires_at, now);
+        self.run_nft(&["add", "element", "inet", "fail2ban-rs", &set_name, &elem])
+            .await
     }
 
     async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
         let set_name = format!("f2b-{jail}");
-        self.run_nft(&[
-            "delete",
-            "element",
-            "inet",
-            "fail2ban-rs",
-            &set_name,
-            &format!("{{{ip}}}"),
-        ])
-        .await
+        let elem = format!("{{ {ip} }}");
+        // An element may already be gone (kernel timeout expired it, or it was
+        // never present). Treat that as success rather than a hard error.
+        if let Err(e) = self
+            .run_nft(&["delete", "element", "inet", "fail2ban-rs", &set_name, &elem])
+            .await
+        {
+            debug!(%ip, jail = %jail, error = %e, "nft unban: element absent or already expired");
+        }
+        Ok(())
     }
 
     async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
@@ -147,6 +183,14 @@ impl FirewallBackend for NftablesBackend {
             .await
             .map_err(|e| Error::firewall(format!("nft command failed: {e}")))?;
 
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::firewall(format!(
+                "nft list set failed for {set_name}: {}",
+                stderr.trim()
+            )));
+        }
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         let ip_str = ip.to_string();
         Ok(stdout.split_whitespace().any(|token| token == ip_str))
@@ -156,3 +200,8 @@ impl FirewallBackend for NftablesBackend {
         "nftables"
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[path = "nftables_test.rs"]
+mod nftables_test;

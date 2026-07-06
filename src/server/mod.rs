@@ -1,16 +1,19 @@
 //! Daemon lifecycle — spawns all tasks, handles signals and config reload.
 
 mod reload;
+mod startup;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use etchdb::{FlushPolicy, Store};
+use etchdb::FlushPolicy;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+
+use startup::{handle_legacy_state, open_store_migrating, shutdown_signal, signal_sighup};
 
 use crate::config::Config;
 use crate::control::{self, ControlCmd, Request, Response};
@@ -18,11 +21,9 @@ use crate::detect::watcher::Failure;
 use crate::enforce::{self, FirewallCmd};
 use crate::logging::Logger;
 use crate::track::TrackerCmd;
-use crate::track::persist::BanState;
 
 use reload::{
-    ReloadContext, build_watcher_plan, init_firewalls, reload_config, spawn_watchers,
-    teardown_firewalls,
+    ReloadContext, build_watcher_plan, reload_config, spawn_watchers, teardown_firewalls_full,
 };
 
 /// Run the daemon with the given configuration.
@@ -34,30 +35,12 @@ pub async fn run(mut config: Config, config_path: PathBuf) -> crate::error::Resu
     // Initialize remote logging (no-op if not configured).
     let logger = Logger::init(&config.logging);
 
-    // Migrate: if state_dir points to an old state.bin file, move it aside.
-    if config.global.state_dir.is_file() {
-        let backup = config.global.state_dir.with_extension("bin.bak");
-        info!(
-            phase = "startup",
-            old = %config.global.state_dir.display(),
-            backup = %backup.display(),
-            "state file migrated"
-        );
-        std::fs::rename(&config.global.state_dir, &backup).map_err(|e| {
-            crate::error::Error::io(
-                format!(
-                    "renaming old state file: {}",
-                    config.global.state_dir.display()
-                ),
-                e,
-            )
-        })?;
-    }
+    // Move aside an incompatible legacy state.bin file, if present.
+    handle_legacy_state(&config.global.state_dir).await?;
 
-    // Open etch store for persistent ban state.
-    let mut store =
-        Store::<BanState, etchdb::WalBackend<BanState>>::open_wal(config.global.state_dir.clone())
-            .map_err(crate::error::Error::Etch)?;
+    // Open etch store for persistent ban state, migrating aside any WAL whose
+    // on-disk schema is incompatible with this build.
+    let mut store = open_store_migrating(&config.global.state_dir).await?;
     store.set_flush_policy(FlushPolicy::Grouped {
         interval: Duration::from_millis(100),
     });
@@ -81,7 +64,8 @@ pub async fn run(mut config: Config, config_path: PathBuf) -> crate::error::Resu
             .filter(|ban| ban.expires_at.is_none_or(|exp| exp > now))
             .cloned()
             .collect();
-        let counts: HashMap<std::net::IpAddr, u32> = state.ban_counts.clone();
+        let counts: HashMap<std::net::IpAddr, crate::track::persist::BanCount> =
+            state.ban_counts.clone();
         drop(state);
 
         if !expired_keys.is_empty() {
@@ -113,6 +97,7 @@ pub async fn run(mut config: Config, config_path: PathBuf) -> crate::error::Resu
     // Create channels.
     let (failure_tx, failure_rx) = mpsc::channel::<Failure>(config.global.channel_size);
     let (executor_tx, executor_rx) = mpsc::channel::<FirewallCmd>(config.global.channel_size);
+    let (reconcile_tx, reconcile_rx) = mpsc::channel::<enforce::ReconcileRequest>(4);
     let (control_tx, mut control_rx) = mpsc::channel::<ControlCmd>(32);
     let (tracker_cmd_tx, tracker_cmd_rx) = mpsc::channel::<TrackerCmd>(32);
 
@@ -125,23 +110,34 @@ pub async fn run(mut config: Config, config_path: PathBuf) -> crate::error::Resu
         .collect();
     let backends = enforce::create_backends(&jail_configs)?;
 
-    // Restore bans in the firewall (directly via backends, before executor
-    // owns them).
+    // Initialize firewall backends (create chains/sets) BEFORE restoring bans,
+    // then re-apply restored bans — otherwise restored bans target sets/chains
+    // that do not yet exist and are silently dropped. Both run directly on the
+    // backends before the executor takes ownership.
     let now = chrono::Utc::now().timestamp();
-    let active_bans = enforce::restore_bans(&restored_bans, &backends, now, &jail_configs).await;
+    let active_bans =
+        enforce::init_and_restore(&restored_bans, &backends, now, &jail_configs).await?;
     info!(
         phase = "startup",
         bans = active_bans.len(),
         "firewall bans restored"
     );
 
-    // Spawn executor (must be running before we send init commands).
+    // Spawn executor (owns the already-initialized backends). It reports
+    // automatic ban-apply failures back to the tracker via the tracker command
+    // channel and services reconcile requests on the dedicated channel.
     let executor_cancel = cancel.child_token();
+    let executor_tracker_tx = tracker_cmd_tx.clone();
     tokio::spawn(async move {
-        enforce::run(executor_rx, backends, executor_cancel).await;
+        enforce::run(
+            executor_rx,
+            reconcile_rx,
+            backends,
+            executor_tracker_tx,
+            executor_cancel,
+        )
+        .await;
     });
-
-    init_firewalls(&executor_tx, config.enabled_jails(), "startup").await?;
 
     // Log startup event.
     if let Some(t) = logger.as_ref() {
@@ -167,6 +163,7 @@ pub async fn run(mut config: Config, config_path: PathBuf) -> crate::error::Resu
             failure_rx,
             tracker_cmd_rx,
             tracker_executor_tx,
+            Some(reconcile_tx),
             active_bans,
             restored_ban_counts,
             tracker_store,
@@ -185,6 +182,12 @@ pub async fn run(mut config: Config, config_path: PathBuf) -> crate::error::Resu
 
     info!(phase = "startup", "fail2ban-rs started");
 
+    // Reload-window invariant: the server retains this original `failure_tx`
+    // sender for the entire daemon lifetime (it is never dropped inside the
+    // select loop below). Reloads clone it for new watchers and cancel the old
+    // ones, but because this sender stays alive the whole time, the tracker's
+    // `failure_rx` can never observe all senders dropped mid-reload — so the
+    // tracker will not exit during the watcher respawn window.
     let failure_tx_for_reload = failure_tx;
 
     // Main select loop.
@@ -192,7 +195,7 @@ pub async fn run(mut config: Config, config_path: PathBuf) -> crate::error::Resu
         tokio::select! {
             () = shutdown_signal() => {
                 info!(phase = "shutdown", "fail2ban-rs stopping");
-                teardown_firewalls(
+                teardown_firewalls_full(
                     &executor_tx,
                     config.enabled_jails().map(|(name, _)| name),
                     "shutdown",
@@ -298,12 +301,16 @@ async fn handle_control_request(
         }
 
         Request::Ban { ip, jail } => {
+            let ban_time = match resolve_ban_time(ctx.config, &jail) {
+                Ok(secs) => secs,
+                Err(msg) => return Response::error(msg),
+            };
             let (tx, rx) = tokio::sync::oneshot::channel();
             if tracker_cmd_tx
                 .send(TrackerCmd::ManualBan {
                     ip,
                     jail_id: jail.clone(),
-                    ban_time: 3600,
+                    ban_time,
                     respond: tx,
                 })
                 .await
@@ -390,70 +397,16 @@ async fn handle_control_request(
     }
 }
 
-#[cfg(unix)]
-async fn signal_sighup() {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut stream = match signal(SignalKind::hangup()) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(
-                phase = "startup",
-                signal = "SIGHUP",
-                error = %e,
-                "signal handler register failed"
-            );
-            std::future::pending::<()>().await;
-            return;
-        }
-    };
-    stream.recv().await;
-}
-
-#[cfg(unix)]
-async fn shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    let mut sigint = match signal(SignalKind::interrupt()) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(
-                phase = "startup",
-                signal = "SIGINT",
-                error = %e,
-                "signal handler register failed"
-            );
-            std::future::pending::<()>().await;
-            return;
-        }
-    };
-    let mut sigterm = match signal(SignalKind::terminate()) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(
-                phase = "startup",
-                signal = "SIGTERM",
-                error = %e,
-                "signal handler register failed"
-            );
-            std::future::pending::<()>().await;
-            return;
-        }
-    };
-
-    tokio::select! {
-        _ = sigint.recv() => {}
-        _ = sigterm.recv() => {}
+/// Resolve the configured ban time (seconds) for a manual ban on `jail`.
+///
+/// Returns an error message string when the jail is unknown or disabled, so
+/// the caller can reject the request instead of applying a bogus default.
+fn resolve_ban_time(config: &Config, jail: &str) -> std::result::Result<i64, String> {
+    match config.jail.get(jail) {
+        Some(cfg) if cfg.enabled => Ok(cfg.ban_time),
+        Some(_) => Err(format!("jail '{jail}' is not enabled")),
+        None => Err(format!("unknown jail '{jail}'")),
     }
-}
-
-#[cfg(not(unix))]
-async fn signal_sighup() {
-    std::future::pending::<()>().await;
-}
-
-#[cfg(not(unix))]
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]
@@ -463,61 +416,4 @@ async fn shutdown_signal() {
     clippy::unwrap_used,
     clippy::needless_pass_by_value
 )]
-mod tests {
-    use crate::control::{Request, Response};
-
-    #[test]
-    fn status_request_response() {
-        let requests = vec![
-            Request::Status,
-            Request::ListBans,
-            Request::Ban {
-                ip: "1.2.3.4".parse().unwrap(),
-                jail: "sshd".to_string(),
-            },
-            Request::Unban {
-                ip: "10.0.0.1".parse().unwrap(),
-                jail: "nginx".to_string(),
-            },
-            Request::Reload,
-            Request::Stats,
-        ];
-
-        for req in requests {
-            let json = serde_json::to_string(&req).unwrap();
-            let _parsed: Request = serde_json::from_str(&json).unwrap();
-        }
-    }
-
-    #[test]
-    fn response_ok_serialization() {
-        let resp = Response::ok("running");
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("ok"));
-        assert!(json.contains("running"));
-    }
-
-    #[test]
-    fn response_error_serialization() {
-        let resp = Response::error("something went wrong");
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("error"));
-        assert!(json.contains("something went wrong"));
-    }
-
-    #[test]
-    fn response_ok_data_serialization() {
-        let data = serde_json::json!({ "bans": [{"ip": "1.2.3.4"}] });
-        let resp = Response::ok_data(data);
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("1.2.3.4"));
-    }
-
-    #[test]
-    fn stats_request_serialization() {
-        let req = Request::Stats;
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: Request = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, Request::Stats));
-    }
-}
+mod mod_test;

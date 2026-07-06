@@ -4,7 +4,7 @@
 //! must be specified in the jail config. ISO 8601 uses a zero-alloc byte
 //! scanner; other formats fall back to regex + chrono.
 
-use chrono::{NaiveDateTime, Utc};
+use chrono::{Datelike, Local, LocalResult, NaiveDateTime, TimeZone};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +41,9 @@ impl DateParser {
             let pattern = match format {
                 DateFormat::Syslog => r"([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})",
                 DateFormat::Epoch => r"(\d{10,})",
-                DateFormat::Common => r"(\d{2})/([A-Z][a-z]{2})/(\d{4}):(\d{2}):(\d{2}):(\d{2})",
+                DateFormat::Common => {
+                    r"(\d{2})/([A-Z][a-z]{2})/(\d{4}):(\d{2}):(\d{2}):(\d{2})(?:\s+([+-]\d{4}))?"
+                }
                 DateFormat::Iso8601 => unreachable!(),
             };
             Some(Regex::new(pattern).map_err(|e| Error::Regex {
@@ -75,12 +77,34 @@ fn parse_syslog(caps: &regex::Captures<'_>) -> Option<i64> {
     let min: u32 = caps.get(4)?.as_str().parse().ok()?;
     let sec: u32 = caps.get(5)?.as_str().parse().ok()?;
     let month = month_from_abbr(month_str)?;
-    let year = Utc::now().format("%Y").to_string().parse::<i32>().ok()?;
+
+    // Syslog carries no year — assume the current year, interpreted as LOCAL
+    // time (the syslog convention).
+    let now = Local::now();
+    let ts = syslog_timestamp(now.year(), month, day, hour, min, sec)?;
+    // Rollover correction: a December log replayed on January 1st would land
+    // ~1 year in the future. If the date is more than a day ahead of now, it
+    // belongs to the previous year.
+    if ts > now.timestamp() + 86_400 {
+        return syslog_timestamp(now.year() - 1, month, day, hour, min, sec);
+    }
+    Some(ts)
+}
+
+/// Build a Unix timestamp for a syslog date, interpreting it as LOCAL time.
+///
+/// Ambiguous (fall-back DST) or nonexistent (spring-forward DST) local times
+/// fall back to a UTC interpretation rather than panicking.
+fn syslog_timestamp(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> Option<i64> {
     let dt = NaiveDateTime::new(
         chrono::NaiveDate::from_ymd_opt(year, month, day)?,
         chrono::NaiveTime::from_hms_opt(hour, min, sec)?,
     );
-    Some(dt.and_utc().timestamp())
+    match Local.from_local_datetime(&dt) {
+        LocalResult::Single(t) => Some(t.timestamp()),
+        // Ambiguous or nonexistent — fall back to UTC interpretation.
+        LocalResult::Ambiguous(..) | LocalResult::None => Some(dt.and_utc().timestamp()),
+    }
 }
 
 fn parse_epoch(caps: &regex::Captures<'_>) -> Option<i64> {
@@ -99,7 +123,27 @@ fn parse_common(caps: &regex::Captures<'_>) -> Option<i64> {
         chrono::NaiveDate::from_ymd_opt(year, month, day)?,
         chrono::NaiveTime::from_hms_opt(hour, min, sec)?,
     );
-    Some(dt.and_utc().timestamp())
+    let base = dt.and_utc().timestamp();
+    // Apply the captured `+HHMM`/`-HHMM` zone offset if present. The naive
+    // fields are local to that offset, so subtract it to reach UTC. Absent an
+    // offset the value is treated as UTC (unchanged behavior).
+    let offset = caps
+        .get(7)
+        .and_then(|m| parse_numeric_offset(m.as_str()))
+        .unwrap_or(0);
+    Some(base - offset)
+}
+
+/// Parse a numeric zone offset like `+0500` or `-0300` into seconds.
+fn parse_numeric_offset(s: &str) -> Option<i64> {
+    let sign = match s.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let hh: i64 = s.get(1..3)?.parse().ok()?;
+    let mm: i64 = s.get(3..5)?.parse().ok()?;
+    Some(sign * (hh * 3600 + mm * 60))
 }
 
 // ---------------------------------------------------------------------------
@@ -137,11 +181,48 @@ fn scan_iso8601(b: &[u8]) -> Option<i64> {
                 && min <= 59
                 && sec <= 59
             {
-                return Some(unix_timestamp(year as i32, month, day, hour, min, sec));
+                let base = unix_timestamp(year as i32, month, day, hour, min, sec);
+                // Apply a trailing zone offset if present; `Z` and naive
+                // timestamps (no suffix) are treated as UTC.
+                return Some(base - scan_iso_offset(b, i + 19));
             }
         }
     }
     None
+}
+
+/// Scan for a timezone offset following the ISO 8601 seconds field.
+///
+/// Returns the offset in seconds to subtract to reach UTC. `Z`, an absent
+/// suffix, and any unrecognized trailer all yield `0` (UTC interpretation).
+/// Fractional seconds (`.123`) before the offset are skipped.
+fn scan_iso_offset(b: &[u8], mut pos: usize) -> i64 {
+    if b.get(pos) == Some(&b'.') {
+        pos += 1;
+        while matches!(b.get(pos), Some(d) if d.is_ascii_digit()) {
+            pos += 1;
+        }
+    }
+    match b.get(pos) {
+        Some(b'+') => iso_hm_offset(b, pos + 1, 1),
+        Some(b'-') => iso_hm_offset(b, pos + 1, -1),
+        _ => 0,
+    }
+}
+
+/// Parse an `HH:MM` or `HHMM` offset body at `pos`, applying `sign`.
+fn iso_hm_offset(b: &[u8], pos: usize, sign: i64) -> i64 {
+    let Some(hh) = parse_2(b, pos) else {
+        return 0;
+    };
+    // Minutes may be separated by a colon or run on directly.
+    let min_pos = if b.get(pos + 2) == Some(&b':') {
+        pos + 3
+    } else {
+        pos + 2
+    };
+    let mm = parse_2(b, min_pos).unwrap_or(0);
+    sign * (i64::from(hh) * 3600 + i64::from(mm) * 60)
 }
 
 /// Parse a 2-digit decimal number from bytes.
@@ -210,134 +291,5 @@ fn month_from_abbr(s: &str) -> Option<u32> {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::detect::date::{DateFormat, DateParser};
-
-    #[test]
-    fn syslog_format() {
-        let parser = DateParser::new(DateFormat::Syslog).unwrap();
-        let line = "Jan 15 10:30:00 server sshd[1234]: Failed password";
-        let ts = parser.parse_line(line);
-        assert!(ts.is_some());
-        let ts = ts.unwrap();
-        assert!(ts > 0);
-    }
-
-    #[test]
-    fn syslog_single_digit_day() {
-        let parser = DateParser::new(DateFormat::Syslog).unwrap();
-        let line = "Feb  3 08:15:22 host kernel: something";
-        let ts = parser.parse_line(line);
-        assert!(ts.is_some());
-    }
-
-    #[test]
-    fn iso8601_format() {
-        let parser = DateParser::new(DateFormat::Iso8601).unwrap();
-        let line = "2024-01-15T10:30:00Z some log message";
-        let ts = parser.parse_line(line).unwrap();
-        assert!(ts > 0);
-        // Should be consistent — parsing twice gives the same result.
-        let ts2 = parser.parse_line(line).unwrap();
-        assert_eq!(ts, ts2);
-    }
-
-    #[test]
-    fn iso8601_space_separator() {
-        let parser = DateParser::new(DateFormat::Iso8601).unwrap();
-        let line = "2024-01-15 10:30:00 some log message";
-        let ts = parser.parse_line(line).unwrap();
-        // Should produce same result as T-separated.
-        let line_t = "2024-01-15T10:30:00 some log message";
-        let ts_t = parser.parse_line(line_t).unwrap();
-        assert_eq!(ts, ts_t);
-    }
-
-    #[test]
-    fn epoch_format() {
-        let parser = DateParser::new(DateFormat::Epoch).unwrap();
-        let line = "1705312200 something happened";
-        let ts = parser.parse_line(line).unwrap();
-        assert_eq!(ts, 1_705_312_200);
-    }
-
-    #[test]
-    fn common_log_format() {
-        let parser = DateParser::new(DateFormat::Common).unwrap();
-        let line = r#"192.168.1.1 - - [15/Jan/2024:10:30:00 +0000] "GET / HTTP/1.1""#;
-        let ts = parser.parse_line(line).unwrap();
-        assert!(ts > 0);
-        // Common and ISO8601 for the same date/time should match.
-        let iso_parser = DateParser::new(DateFormat::Iso8601).unwrap();
-        let iso_ts = iso_parser.parse_line("2024-01-15T10:30:00 log").unwrap();
-        assert_eq!(ts, iso_ts);
-    }
-
-    #[test]
-    fn no_match_returns_none() {
-        let parser = DateParser::new(DateFormat::Iso8601).unwrap();
-        let line = "this line has no date";
-        assert!(parser.parse_line(line).is_none());
-    }
-
-    #[test]
-    fn wrong_format_returns_none() {
-        let parser = DateParser::new(DateFormat::Epoch).unwrap();
-        let line = "Jan 15 10:30:00 syslog format line";
-        // Epoch parser looks for 10+ digit number — "10" won't match
-        assert!(parser.parse_line(line).is_none());
-    }
-
-    #[test]
-    fn all_months_parse() {
-        let parser = DateParser::new(DateFormat::Syslog).unwrap();
-        let months = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
-        for month in months {
-            let line = format!("{month} 15 12:00:00 test");
-            assert!(
-                parser.parse_line(&line).is_some(),
-                "failed to parse month: {month}"
-            );
-        }
-    }
-
-    #[test]
-    fn invalid_month_returns_none() {
-        let parser = DateParser::new(DateFormat::Syslog).unwrap();
-        let line = "Xyz 15 10:30:00 server test";
-        assert!(parser.parse_line(line).is_none());
-    }
-
-    #[test]
-    fn epoch_nine_digits_no_match() {
-        let parser = DateParser::new(DateFormat::Epoch).unwrap();
-        // 9-digit number should NOT match \d{10,}
-        let line = "999999999 short";
-        assert!(parser.parse_line(line).is_none());
-    }
-
-    #[test]
-    fn epoch_ten_digits_matches() {
-        let parser = DateParser::new(DateFormat::Epoch).unwrap();
-        let line = "1000000000 ten digits";
-        let ts = parser.parse_line(line).unwrap();
-        assert_eq!(ts, 1_000_000_000);
-    }
-
-    #[test]
-    fn common_invalid_month_returns_none() {
-        let parser = DateParser::new(DateFormat::Common).unwrap();
-        let line = r#"10.0.0.1 - - [15/Xyz/2024:10:30:00 +0000] "GET /""#;
-        assert!(parser.parse_line(line).is_none());
-    }
-
-    #[test]
-    fn syslog_invalid_time_returns_none() {
-        let parser = DateParser::new(DateFormat::Syslog).unwrap();
-        // Hour 25 — from_hms_opt returns None.
-        let line = "Jan 15 25:30:00 server test";
-        assert!(parser.parse_line(line).is_none());
-    }
-}
+#[path = "date_test.rs"]
+mod date_test;

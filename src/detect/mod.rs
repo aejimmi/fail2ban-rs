@@ -17,3 +17,10 @@ pub mod matcher;
 pub mod pattern;
 /// Log file tailer with rotation detection.
 pub mod watcher;
+
+/// IP extraction from regex match spans (internal to the matcher).
+mod extract;
+/// Log file identity and rotation detection (internal to the reader).
+mod identity;
+/// Blocking log-file read loop (internal to the watcher).
+mod reader;

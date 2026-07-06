@@ -2,15 +2,15 @@
 
 # Run all tests
 test:
-    cargo test --workspace --no-fail-fast
+    cargo test --no-fail-fast
 
-# Run tests for a specific crate
-test-crate crate:
-    cargo test -p {{crate}}
+# Run all tests including optional features (tell)
+test-all-features:
+    cargo test --all-features --no-fail-fast
 
 # Run clippy lints
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --all-targets -- -D warnings
 
 # Check formatting
 fmt:
@@ -34,11 +34,7 @@ coverage-html:
 
 # Run benchmarks
 bench:
-    cargo bench --workspace
-
-# Run benchmarks for a specific crate
-bench-crate crate:
-    cargo bench -p {{crate}}
+    cargo bench
 
 # Run all checks (lint, fmt, test, deny)
 check-all: lint fmt test deny

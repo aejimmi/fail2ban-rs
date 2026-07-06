@@ -6,11 +6,13 @@
 - Positional IP extraction — identifies the correct host IP by its position in the pattern, even when other IPs appear in URLs or log fields.
 - Ignore regex — lines matching ignoreregex are suppressed even when a failregex matches.
 - Four timestamp formats — syslog, ISO 8601 (zero-alloc byte scanner), unix epoch, and common log format.
+- Timezone-aware parsing — numeric `+HHMM`/`-HHMM` offsets are normalized to UTC; ambiguous or skipped local times (DST transitions) resolve deterministically.
 
 ## Banning
 
 - Configurable thresholds — max retries, find time window, and ban duration per jail.
 - Escalating bans — repeat offenders get progressively longer bans with configurable multipliers and a maximum cap.
+- Escalation decay — per-IP ban counts reset after a configurable quiet period (`ban_count_decay`, default 30d; `"0"` disables), bounding memory and giving reformed IPs a clean slate.
 - Permanent bans — set ban time to -1 for indefinite bans.
 - IP allowlist — never ban IPs or CIDRs in the ignore list; auto-detects local machine IPs by default.
 - Manual ban and unban — issue bans and unbans via CLI for any jail.
@@ -25,8 +27,9 @@
 ## Persistence
 
 - WAL-backed storage — bans persisted immediately via write-ahead log for crash recovery.
+- Ordered restore — firewall chains and sets are initialized before any saved ban is re-applied, so restored bans are never dropped after a clean restart.
 - Expired ban cleanup — stale bans purged on startup instead of being restored.
-- Automatic migration — old state.bin files backed up and new format used transparently.
+- Automatic migration — old state.bin files and schema-incompatible WALs are backed up aside and a fresh store is opened, rather than silently misreading stale bytes.
 
 ## Log Sources
 
@@ -51,13 +54,14 @@
 - Config generator — generate jail TOML for 88 built-in services (sshd, nginx, apache, postfix, dovecot, vaultwarden, grafana, and more).
 - List-filters — show all 88 available built-in filter templates.
 - List-maxmind — show configured MaxMind database paths and load status.
-- Live reload — reload configuration without restarting the daemon; active bans preserved across reloads with automatic rollback on failure.
+- Live reload — reload configuration without restarting the daemon; jails are added or removed in place and active bans are preserved, with automatic rollback if the new config fails to apply.
 
 ## Configuration
 
 - TOML config — single config file with global settings and per-jail sections.
 - Duration strings — ban_time, find_time accept human-readable values like "10m", "1h", "7d".
-- Startup validation — jail names, ports, protocols, and ban factors validated before the daemon starts.
+- Startup validation — jail names, ports, protocols, ban factors, filter regexes, ignoreip entries, and webhook URLs validated before the daemon starts.
+- Unknown-key rejection — mistyped or unsupported config keys fail loudly at load instead of being silently ignored.
 - Backward-compatible renames — state_file still works as an alias for state_dir.
 - Per-jail reban control — skip re-issuing bans on restart when firewall state persists independently.
 
@@ -75,7 +79,7 @@
 
 ## Deployment
 
-- Single static binary — no runtime dependencies beyond the firewall tooling.
+- Single static binary — no runtime dependencies beyond the firewall tooling, plus `curl` on `PATH` only for jails that configure a webhook.
 - Clean shutdown — responds to both SIGINT and SIGTERM, tearing down firewall rules before exit.
 - Systemd hardening — service unit with capability, filesystem, and syscall restrictions.
 - macOS development config — rootless testing without firewall privileges.

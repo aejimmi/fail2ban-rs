@@ -114,7 +114,12 @@ impl FirewallBackend for IptablesBackend {
         let cmd = self.cmd_path(ip);
         let chain = format!("f2b-{jail}");
         let ip_str = ip.to_string();
-        Self::run(cmd, &["-D", &chain, "-s", &ip_str, "-j", "DROP"]).await
+        // The DROP rule may already be gone; deleting a missing rule must not
+        // be fatal.
+        if let Err(e) = Self::run(cmd, &["-D", &chain, "-s", &ip_str, "-j", "DROP"]).await {
+            debug!(%ip, jail = %jail, error = %e, "iptables unban: rule absent");
+        }
+        Ok(())
     }
 
     async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
@@ -135,3 +140,8 @@ impl FirewallBackend for IptablesBackend {
         "iptables"
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[path = "iptables_test.rs"]
+mod iptables_test;

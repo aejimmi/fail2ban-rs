@@ -19,6 +19,26 @@ impl ScriptBackend {
         Self { ban_cmd, unban_cmd }
     }
 
+    /// Validate a jail name before it is substituted into a shell command.
+    ///
+    /// Defense-in-depth: even though jail names are meant to be validated at
+    /// config load time, this backend runs templates through `sh -c`, so it
+    /// re-checks here and refuses to run rather than trusting the caller. Only
+    /// `[A-Za-z0-9_-]{1,64}` is permitted — anything that could carry shell
+    /// metacharacters (`;`, `$( )`, backticks, spaces, quotes) is rejected.
+    fn validate_jail_name(jail: &str) -> Result<()> {
+        let ok = (1..=64).contains(&jail.len())
+            && jail
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if !ok {
+            return Err(Error::firewall(format!(
+                "script backend: refusing unsafe jail name {jail:?}"
+            )));
+        }
+        Ok(())
+    }
+
     fn substitute(template: &str, ip: &IpAddr, jail: &str) -> String {
         template
             .replace("<IP>", &ip.to_string())
@@ -27,7 +47,7 @@ impl ScriptBackend {
 
     /// Run a command via `sh -c`. This uses shell execution, but is safe
     /// because `ip` is a validated `IpAddr` (cannot contain shell metacharacters)
-    /// and `jail` is validated at config load time.
+    /// and `jail` is validated by [`Self::validate_jail_name`] before substitution.
     async fn run_cmd(cmd_line: &str) -> Result<()> {
         let output = tokio::process::Command::new("sh")
             .args(["-c", cmd_line])
@@ -57,11 +77,13 @@ impl FirewallBackend for ScriptBackend {
     }
 
     async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+        Self::validate_jail_name(jail)?;
         let cmd = Self::substitute(&self.ban_cmd, ip, jail);
         Self::run_cmd(&cmd).await
     }
 
     async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+        Self::validate_jail_name(jail)?;
         let cmd = Self::substitute(&self.unban_cmd, ip, jail);
         Self::run_cmd(&cmd).await
     }
@@ -75,3 +97,7 @@ impl FirewallBackend for ScriptBackend {
         "script"
     }
 }
+
+#[cfg(test)]
+#[path = "script_test.rs"]
+mod script_test;

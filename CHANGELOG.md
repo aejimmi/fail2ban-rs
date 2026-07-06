@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.4.0
+
+New:
+- banning: repeat-offender escalation resets after a quiet period, configurable via ban_count_decay (default 30 days, 0 disables)
+- firewall: nftables entries carry kernel timeouts so bans expire even if the daemon dies
+- firewall: bans missing from the firewall are re-applied automatically, and bans that fail to apply are rolled back instead of lingering as phantom state
+- config: unknown or misspelled keys rejected at load instead of silently getting defaults
+- config: startup validation catches invalid ignoreip entries, filter regexes, ports, ban times, webhook URLs, and zero channel sizes
+- config: ignoreip accepts bare IPs without a CIDR suffix
+- security: control socket verifies the connecting user on Linux and caps oversized responses
+
+Fix:
+- startup: persisted bans are restored after firewall setup, so bans actually survive a restart again
+- reload: banned IPs stay blocked through a config reload; jails are updated in place instead of torn down and rebuilt
+- banning: an unbanned IP must reach the full failure threshold again before being re-banned
+- banning: a re-banned IP is no longer unbanned early by a leftover timer from its previous ban
+- banning: manual bans use the jail's configured ban time instead of a fixed hour
+- date: timezone offsets in log timestamps are applied, syslog times are read as local time, and the New Year rollover is handled
+- watcher: lines written in multiple chunks are matched whole, and log rotation no longer drops the last lines of the old file
+- notifications: webhook URLs restricted to http and https and passed safely to curl
+- firewall: a failing nft query is reported as an error instead of "not banned"
+- logging: the old global.log_level key is now honored with a deprecation warning, as v1.3.0 promised
+- cli: dry-run applies the find_time window so its verdicts match the running daemon
+
+Breaking:
+- persistence: ban state format changed; old state is preserved as a .bak file but active bans are not restored across this upgrade
+- config: stricter validation can reject files that previously loaded; error messages name the offending key or value
+
 ## v1.3.0
 
 New:

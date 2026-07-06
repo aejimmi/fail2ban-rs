@@ -71,6 +71,17 @@ ignoreself = true
 
 Durations accept `s`, `m`, `h`, `d`, `w` suffixes (e.g. `"10m"`, `"1h"`, `"7d"`). Raw seconds also work.
 
+### Escalation decay
+
+With `bantime_increment`, each repeat ban of an IP raises its ban time. The per-IP escalation counter is reset after a quiet period so a reformed IP starts fresh and the counter map cannot grow without bound:
+
+```toml
+[global]
+ban_count_decay = "30d"   # reset escalation count after 30 quiet days (default); "0" disables
+```
+
+An IP with no new ban within `ban_count_decay` has its escalation count dropped on the next sweep, so its next offense escalates from zero again — mirroring fail2ban's bantime-decay concept.
+
 ### Firewall backends
 
 **nftables** (default): Creates table `inet fail2ban-rs`, chain, and per-jail sets. Teardown on shutdown.
@@ -105,9 +116,22 @@ iptables -I INPUT -m set --match-set fail2ban-sshd src -j DROP
 
 > **Note:** ipset lives in kernel memory — it survives service restarts but not system reboots. For persistence across reboots, use `ipset save` / `ipset restore` in a systemd unit or set `reban_on_restart = true`.
 
+### Webhooks
+
+Set `webhook` on a jail to POST a JSON payload (IP, jail, ban time, timestamp) on every ban:
+
+```toml
+[jail.sshd]
+webhook = "https://example.com/hooks/ban"
+```
+
+> **Note:** webhooks shell out to `curl` on `PATH` — the one dependency beyond the firewall tooling that the single-binary install doesn't bundle. Jails without a `webhook` never invoke it.
+
 ### Config overlays
 
 Additional `.toml` files in `config.d/` next to your main config are merged alphabetically.
+
+Unknown keys are rejected at load, so a typo fails fast instead of being silently ignored.
 
 ## Built-in filters
 
