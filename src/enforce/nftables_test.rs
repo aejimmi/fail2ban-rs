@@ -6,6 +6,32 @@ use std::fs;
 /// file. Mirrors the technique used in `iptables_test.rs`.
 const SEP: &str = "===";
 
+/// First arg the fake binary treats as a no-op warm-up: it exits 0 without
+/// touching the log. Used by [`wait_until_executable`] to probe exec-readiness.
+const WARMUP_ARG: &str = "__f2b_warmup__";
+
+/// Block until a freshly written fake binary can be executed.
+///
+/// Tests run multithreaded, and each spawns child processes via `fork`+`exec`.
+/// If another thread forks while this file's writable fd is still open, the
+/// child transiently inherits that fd and any `exec` of the file races with
+/// `ETXTBSY` ("Text file busy", errno 26). The window closes as soon as that
+/// child completes its own `exec` (std opens files `O_CLOEXEC`). We probe with
+/// a no-op invocation until it clears, so the real test never sees `ETXTBSY`.
+fn wait_until_executable(path: &std::path::Path) {
+    for _ in 0..200 {
+        match std::process::Command::new(path).arg(WARMUP_ARG).status() {
+            // Clean once the transient writable-fd holder has exec'd away.
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            // Success or any non-ETXTBSY error: the file is settled (a real
+            // problem, e.g. a bad script, surfaces in the test itself).
+            _ => return,
+        }
+    }
+}
+
 /// Write an executable shell script standing in for `nft`.
 ///
 /// Every invocation appends its argv (one arg per line) to `log_path`,
@@ -19,7 +45,8 @@ fn write_fake_bin(
     stdout: &str,
 ) {
     let script = format!(
-        "#!/bin/sh\nfor a in \"$@\"; do\n  printf '%s\\n' \"$a\"\ndone >> \"{log}\"\nprintf '{sep}\\n' >> \"{log}\"\nprintf '%s' \"{stdout}\"\nexit {code}\n",
+        "#!/bin/sh\nif [ \"$1\" = \"{warmup}\" ]; then exit 0; fi\nfor a in \"$@\"; do\n  printf '%s\\n' \"$a\"\ndone >> \"{log}\"\nprintf '{sep}\\n' >> \"{log}\"\nprintf '%s' \"{stdout}\"\nexit {code}\n",
+        warmup = WARMUP_ARG,
         log = log_path.display(),
         sep = SEP,
         stdout = stdout,
@@ -33,6 +60,7 @@ fn write_fake_bin(
         perm.set_mode(0o755);
         fs::set_permissions(path, perm).expect("chmod fake binary");
     }
+    wait_until_executable(path);
 }
 
 /// A fake binary whose exit code depends on whether the 2nd argument
@@ -42,7 +70,8 @@ fn write_fake_bin(
 /// every other step to succeed.
 fn write_conditional_fail_bin(path: &std::path::Path, log_path: &std::path::Path, fail_on: &str) {
     let script = format!(
-        "#!/bin/sh\nfor a in \"$@\"; do\n  printf '%s\\n' \"$a\"\ndone >> \"{log}\"\nprintf '{sep}\\n' >> \"{log}\"\nif [ \"$2\" = \"{fail_on}\" ]; then\n  exit 1\nfi\nexit 0\n",
+        "#!/bin/sh\nif [ \"$1\" = \"{warmup}\" ]; then exit 0; fi\nfor a in \"$@\"; do\n  printf '%s\\n' \"$a\"\ndone >> \"{log}\"\nprintf '{sep}\\n' >> \"{log}\"\nif [ \"$2\" = \"{fail_on}\" ]; then\n  exit 1\nfi\nexit 0\n",
+        warmup = WARMUP_ARG,
         log = log_path.display(),
         sep = SEP,
         fail_on = fail_on,
@@ -55,6 +84,7 @@ fn write_conditional_fail_bin(path: &std::path::Path, log_path: &std::path::Path
         perm.set_mode(0o755);
         fs::set_permissions(path, perm).expect("chmod fake binary");
     }
+    wait_until_executable(path);
 }
 
 /// Parse the log file into one `Vec<String>` of args per invocation.
