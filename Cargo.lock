@@ -381,13 +381,12 @@ dependencies = [
 
 [[package]]
 name = "etchdb"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e8be2dca34c4d42ec3460bfdfe0c93939a5d6dc7ba9a6e10c294d1c765789f7"
+version = "0.5.0"
 dependencies = [
  "etchdb-derive",
  "parking_lot",
  "postcard",
+ "rmp-serde",
  "serde",
  "thiserror",
  "xxhash-rust",
@@ -395,18 +394,17 @@ dependencies = [
 
 [[package]]
 name = "etchdb-derive"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70099d174be3d14d30c3c68eb72df52a69cbcee4a835f7b622f0622d6b77742a"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+ "xxhash-rust",
 ]
 
 [[package]]
 name = "fail2ban-rs"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -967,6 +965,25 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
+]
 
 [[package]]
 name = "rustc_version"

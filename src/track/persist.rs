@@ -9,6 +9,7 @@ use std::net::IpAddr;
 
 use etchdb::{Replayable, Store, Transactable, WalBackend};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::track::state::BanRecord;
 
@@ -60,6 +61,13 @@ pub fn open_ban_store(
 ) -> crate::error::Result<Store<BanState, WalBackend<BanState>>> {
     let store = Store::<BanState, WalBackend<BanState>>::open_wal(dir)
         .map_err(|e| crate::error::Error::persistence(format!("opening ban store WAL: {e}")))?;
+    // Surface any WAL entries the replay skipped or quarantined. etch loads
+    // leniently (recover the valid prefix rather than refuse to start), but a
+    // silent partial load is exactly what we don't want for ban state — log it.
+    let report = store.replay_report();
+    if report.has_loss() {
+        warn!(phase = "startup", summary = %report.summary(), "ban store replay dropped entries");
+    }
     verify_or_stamp_schema(&store)?;
     Ok(store)
 }
@@ -90,7 +98,8 @@ fn verify_or_stamp_schema(
 fn stamp_schema_version(store: &Store<BanState, WalBackend<BanState>>) -> crate::error::Result<()> {
     store
         .write(|tx| {
-            tx.meta.put(SCHEMA_VERSION_KEY.to_string(), SCHEMA_VERSION);
+            tx.meta
+                .put(SCHEMA_VERSION_KEY.to_string(), SCHEMA_VERSION)?;
             Ok(())
         })
         .map_err(|e| crate::error::Error::persistence(format!("stamping schema version: {e}")))

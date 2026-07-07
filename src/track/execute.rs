@@ -77,7 +77,7 @@ fn persist_ban(
     new_ban_count: Option<u32>,
 ) {
     if let Err(e) = s.store.write(|tx| {
-        tx.bans.put(key.clone(), ban.clone());
+        tx.bans.put(key.clone(), ban.clone())?;
         if let Some(count) = new_ban_count {
             // Stamp the ban timestamp so the sweep can decay stale counters.
             tx.ban_counts.put(
@@ -86,7 +86,7 @@ fn persist_ban(
                     count,
                     last_ban: ban.banned_at,
                 },
-            );
+            )?;
         }
         Ok(())
     }) {

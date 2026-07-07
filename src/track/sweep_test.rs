@@ -234,14 +234,14 @@ fn prune_decayed_ban_counts_drops_only_stale_entries() {
                     count: 2,
                     last_ban: now - 10, // well within the window
                 },
-            );
+            )?;
             tx.ban_counts.put(
                 stale_ip,
                 BanCount {
                     count: 9,
                     last_ban: now - decay - 1, // just past the window
                 },
-            );
+            )?;
             Ok(())
         })
         .expect("seed ban_counts");
@@ -271,7 +271,7 @@ fn prune_decayed_ban_counts_disabled_keeps_everything() {
                     count: 4,
                     last_ban: 0, // ancient
                 },
-            );
+            )?;
             Ok(())
         })
         .expect("seed");

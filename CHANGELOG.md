@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.4.1
+
+- persistence: upgraded the embedded storage engine (etchdb 0.5) with WAL crash-safety and durability fixes
+- persistence: startup warns if any ban-state entries were unreadable and dropped during load, instead of loading a partial state silently
+
 ## v1.4.0
 
 New:

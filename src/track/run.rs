@@ -158,10 +158,10 @@ fn seed_restored(
     }
     if let Err(e) = state.store.write(|tx| {
         for ban in restored_bans {
-            tx.bans.put((ban.ip, ban.jail_id.clone()), ban.clone());
+            tx.bans.put((ban.ip, ban.jail_id.clone()), ban.clone())?;
         }
         for (ip, count) in restored_ban_counts {
-            tx.ban_counts.put(*ip, *count);
+            tx.ban_counts.put(*ip, *count)?;
         }
         Ok(())
     }) {

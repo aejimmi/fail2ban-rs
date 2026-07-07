@@ -1,6 +1,6 @@
 [package]
 name = "fail2ban-rs"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2024"
 description = "A pure-Rust fail2ban replacement. Single static binary, fast two-phase matching, nftables/iptables firewall backends."
 license = "MIT"
@@ -28,7 +28,7 @@ tokio-util = "0.7"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-etchdb = "0.3.2"
+etchdb = { version = "0.5", path = "../etch" }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 maxminddb = { version = "0.27", features = ["mmap", "simdutf8"], optional = true }
 

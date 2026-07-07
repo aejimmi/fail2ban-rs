@@ -31,7 +31,7 @@ fn round_trip_preserves_bans_and_counts_across_reopen() {
                         banned_at: 1_000,
                         expires_at: Some(1_600),
                     },
-                );
+                )?;
                 tx.bans.put(
                     (ipv6, "nginx".to_string()),
                     BanRecord {
@@ -40,21 +40,21 @@ fn round_trip_preserves_bans_and_counts_across_reopen() {
                         banned_at: 2_000,
                         expires_at: None, // permanent ban
                     },
-                );
+                )?;
                 tx.ban_counts.put(
                     ipv4,
                     BanCount {
                         count: 3,
                         last_ban: 1_000,
                     },
-                );
+                )?;
                 tx.ban_counts.put(
                     ipv6,
                     BanCount {
                         count: 1,
                         last_ban: 2_000,
                     },
-                );
+                )?;
                 Ok(())
             })
             .expect("write");
@@ -110,7 +110,7 @@ fn delete_persists_across_reopen() {
                         banned_at: 0,
                         expires_at: Some(60),
                     },
-                );
+                )?;
                 Ok(())
             })
             .expect("write ban");
@@ -146,7 +146,7 @@ fn multiple_jails_for_same_ip_persist_independently() {
                         banned_at: 10,
                         expires_at: Some(70),
                     },
-                );
+                )?;
                 tx.bans.put(
                     (ip, "nginx".to_string()),
                     BanRecord {
@@ -155,7 +155,7 @@ fn multiple_jails_for_same_ip_persist_independently() {
                         banned_at: 20,
                         expires_at: Some(80),
                     },
-                );
+                )?;
                 Ok(())
             })
             .expect("write");
@@ -207,7 +207,7 @@ fn corrupt_wal_tail_drops_only_the_torn_entry() {
                         banned_at: 1,
                         expires_at: Some(100),
                     },
-                );
+                )?;
                 Ok(())
             })
             .expect("write first entry");
@@ -221,7 +221,7 @@ fn corrupt_wal_tail_drops_only_the_torn_entry() {
                         banned_at: 2,
                         expires_at: Some(200),
                     },
-                );
+                )?;
                 Ok(())
             })
             .expect("write second entry");
@@ -266,7 +266,7 @@ fn truncated_wal_file_does_not_error_on_open() {
                         banned_at: 1,
                         expires_at: Some(50),
                     },
-                );
+                )?;
                 Ok(())
             })
             .expect("write");
@@ -351,8 +351,8 @@ fn opening_old_format_wal_is_a_clean_schema_error() {
                     banned_at: 100,
                     expires_at: Some(700),
                 },
-            );
-            tx.ban_counts.put(ip, 5);
+            )?;
+            tx.ban_counts.put(ip, 5)?;
             Ok(())
         })
         .expect("write old state");
@@ -378,7 +378,7 @@ fn version_mismatch_is_a_clean_schema_error() {
         store
             .write(|tx| {
                 tx.meta
-                    .put("schema_version".to_string(), SCHEMA_VERSION + 1);
+                    .put("schema_version".to_string(), SCHEMA_VERSION + 1)?;
                 Ok(())
             })
             .expect("write future version");
