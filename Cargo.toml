@@ -28,7 +28,7 @@ tokio-util = "0.7"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-etchdb = { version = "0.5", path = "../etch" }
+etchdb = "0.5"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 maxminddb = { version = "0.27", features = ["mmap", "simdutf8"], optional = true }
 
