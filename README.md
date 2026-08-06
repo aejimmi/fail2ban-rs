@@ -196,19 +196,44 @@ cargo test
 
 ## Migration from fail2ban
 
-| fail2ban | fail2ban-rs |
-|---|---|
-| `/etc/fail2ban/jail.conf` | `/etc/fail2ban-rs/config.toml` |
-| `failregex = ...` | `filter = ['...']` |
-| `maxretry = 5` | `max_retry = 5` |
-| `findtime = 10m` | `find_time = "10m"` |
-| `bantime = 1h` | `ban_time = "1h"` |
-| `bantime.increment = true` | `bantime_increment = true` |
-| `bantime.multipliers = 1 2 4 8` | `bantime_multipliers = [1, 2, 4, 8]` |
-| `action = iptables[...]` | `backend = "iptables"` |
-| `ignoreip = 127.0.0.1/8` | `ignoreip = ["127.0.0.1/8"]` |
-| `fail2ban-client status` | `fail2ban-rs status` |
-| `fail2ban-client set sshd banip 1.2.3.4` | `fail2ban-rs ban 1.2.3.4 sshd` |
+fail2ban-rs does not read fail2ban's INI files directly. Create a TOML
+`[jail.<name>]` table for each enabled fail2ban jail. `config.d/*.toml` files,
+merged alphabetically after the main configuration, are the closest equivalent
+to `jail.d/*.local` overrides.
+
+| fail2ban | fail2ban-rs | Notes |
+|---|---|---|
+| `/etc/fail2ban/jail.conf`, `jail.local` | `/etc/fail2ban-rs/config.toml` | Use `[jail.sshd]`, not `[sshd]`. |
+| `jail.d/*.local` | `/etc/fail2ban-rs/config.d/*.toml` | Later files override earlier values. |
+| `enabled = true` | `enabled = true` | Enabled defaults to `true` in a TOML jail. |
+| `logpath = /var/log/auth.log` | `log_path = "/var/log/auth.log"` | One file per jail; fail2ban glob and multi-file `logpath` values need separate jails. |
+| `backend = systemd` | `log_backend = "systemd"` | Omit `log_path` and add `journalmatch = ["_SYSTEMD_UNIT=sshd.service"]` as needed. File watching is `log_backend = "file"`. |
+| `journalmatch = ...` | `journalmatch = ["..."]` | One journal field-match expression per array entry. |
+| `datepattern = ...` | `date_format = "syslog"` | Choose one preset: `syslog`, `iso8601`, `epoch`, or `common`; arbitrary fail2ban `datepattern` expressions are not supported. |
+| `filter = sshd` / `failregex = ...` | `filter = ['... <HOST> ...']` | Copy the actual patterns, with exactly one `<HOST>` per pattern. Use `gen-config` to start from a built-in template. |
+| `ignoreregex = ...` | `ignoreregex = ['...']` | Each matching line is suppressed even if it matches `filter`. These are Rust regular expressions; `<HOST>` is not expanded here. |
+| `maxretry = 5` | `max_retry = 5` | |
+| `findtime = 10m` | `find_time = "10m"` | Numeric seconds also work. |
+| `bantime = 1h` | `ban_time = "1h"` | Use `-1` for a permanent ban. |
+| `bantime.increment = true` | `bantime_increment = true` | |
+| `bantime.factor = 1` | `bantime_factor = 1.0` | |
+| `bantime.multipliers = 1 2 4 8` | `bantime_multipliers = [1, 2, 4, 8]` | |
+| `bantime.maxtime = 1w` | `bantime_maxtime = "1w"` | |
+| `ignoreip = 127.0.0.1/8 ::1` | `ignoreip = ["127.0.0.1/8", "::1"]` | IP addresses and CIDRs only; DNS hostnames are not resolved. |
+| `ignoreself = true` | `ignoreself = true` | |
+| `port = 22`, `protocol = tcp` | `port = ["22"]`, `protocol = "tcp"` | Ports must be numeric; translate service names, ranges, and multiport expressions first. |
+| `action = iptables[...]` / `banaction = ...` | `backend = "iptables"` or `backend = "nftables"` | `nftables` is the default. Use the `script` backend for a custom ban/unban command. |
+| persistent external ban list | `reban_on_restart = false` | Suitable when the external backend retains its own bans, such as ipset. |
+| `fail2ban-client status` | `fail2ban-rs status` | |
+| `fail2ban-client set sshd banip 1.2.3.4` | `fail2ban-rs ban 1.2.3.4 sshd` | |
+
+The following fail2ban features have no direct configuration equivalent yet:
+custom filter tags and interpolation (`%(...)s`), `prefregex`, `maxlines`,
+arbitrary `datepattern`, DNS-based `ignoreip`/`usedns`, `ignorecommand`,
+`bantime.rndtime`, `bantime.formula`, `bantime.overalljails`, named or ranged
+ports, multiple file/glob log paths, and fail2ban action definitions (email,
+Cloudflare, reporting, and multiple actions). A jail using these needs a
+simplified filter/configuration, separate jails, or a `script` backend.
 
 ## Roadmap
 
