@@ -28,6 +28,18 @@ fn element_spec(ip: &IpAddr, expires_at: Option<i64>, now: i64) -> String {
     }
 }
 
+/// Return the family-specific nftables set for a jail.
+///
+/// Each jail has separate `ipv4_addr` and `ipv6_addr` sets, so element
+/// operations must use the set matching the address family.
+fn set_name_for_ip(jail: &str, ip: &IpAddr) -> String {
+    if ip.is_ipv6() {
+        format!("f2b-{jail}-v6")
+    } else {
+        format!("f2b-{jail}")
+    }
+}
+
 /// Nftables backend — uses `nft` command resolved at startup.
 pub struct NftablesBackend {
     nft_path: PathBuf,
@@ -155,14 +167,14 @@ impl FirewallBackend for NftablesBackend {
         expires_at: Option<i64>,
         now: i64,
     ) -> Result<()> {
-        let set_name = format!("f2b-{jail}");
+        let set_name = set_name_for_ip(jail, ip);
         let elem = element_spec(ip, expires_at, now);
         self.run_nft(&["add", "element", "inet", "fail2ban-rs", &set_name, &elem])
             .await
     }
 
     async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
-        let set_name = format!("f2b-{jail}");
+        let set_name = set_name_for_ip(jail, ip);
         let elem = format!("{{ {ip} }}");
         // An element may already be gone (kernel timeout expired it, or it was
         // never present). Treat that as success rather than a hard error.
@@ -176,7 +188,7 @@ impl FirewallBackend for NftablesBackend {
     }
 
     async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
-        let set_name = format!("f2b-{jail}");
+        let set_name = set_name_for_ip(jail, ip);
         let output = tokio::process::Command::new(&self.nft_path)
             .args(["list", "set", "inet", "fail2ban-rs", &set_name])
             .output()

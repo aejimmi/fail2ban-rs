@@ -339,7 +339,7 @@ async fn init_errors_when_nft_binary_is_missing() {
 }
 
 #[tokio::test]
-async fn ban_without_expiry_adds_element_with_no_timeout() {
+async fn ban_ipv4_without_expiry_targets_ipv4_set() {
     let fake = fake_nft_success();
     let ip: IpAddr = "203.0.113.5".parse().unwrap();
     fake.backend
@@ -363,7 +363,7 @@ async fn ban_without_expiry_adds_element_with_no_timeout() {
 }
 
 #[tokio::test]
-async fn ban_with_timeout_adds_element_with_timeout_clause() {
+async fn automatic_ban_ipv4_with_timeout_targets_ipv4_set() {
     let fake = fake_nft_success();
     let ip: IpAddr = "203.0.113.6".parse().unwrap();
     let now = 1_000;
@@ -387,6 +387,30 @@ async fn ban_with_timeout_adds_element_with_timeout_clause() {
     );
 }
 
+/// Automatic bans call `ban_with_timeout`; an IPv6 address must select the
+/// IPv6 set created during jail initialization.
+#[tokio::test]
+async fn automatic_ban_ipv6_with_timeout_targets_ipv6_set() {
+    let fake = fake_nft_success();
+    let ip: IpAddr = "2001:db8::6".parse().unwrap();
+    fake.backend
+        .ban_with_timeout(&ip, "sshd", Some(1_060), 1_000)
+        .await
+        .expect("ban should succeed");
+
+    assert_eq!(
+        read_invocations(&fake.log),
+        vec![vec![
+            "add",
+            "element",
+            "inet",
+            "fail2ban-rs",
+            "f2b-sshd-v6",
+            "{ 2001:db8::6 timeout 60s }",
+        ]]
+    );
+}
+
 #[tokio::test]
 async fn ban_propagates_command_failure() {
     let fake = fake_nft(1, "");
@@ -400,7 +424,7 @@ async fn ban_propagates_command_failure() {
 }
 
 #[tokio::test]
-async fn unban_deletes_the_element() {
+async fn unban_ipv4_deletes_from_ipv4_set() {
     let fake = fake_nft_success();
     let ip: IpAddr = "198.51.100.9".parse().unwrap();
     fake.backend
@@ -420,6 +444,28 @@ async fn unban_deletes_the_element() {
             "f2b-sshd",
             "{ 198.51.100.9 }"
         ]
+    );
+}
+
+#[tokio::test]
+async fn unban_ipv6_deletes_from_ipv6_set() {
+    let fake = fake_nft_success();
+    let ip: IpAddr = "2001:db8::9".parse().unwrap();
+    fake.backend
+        .unban(&ip, "sshd")
+        .await
+        .expect("unban should succeed");
+
+    assert_eq!(
+        read_invocations(&fake.log),
+        vec![vec![
+            "delete",
+            "element",
+            "inet",
+            "fail2ban-rs",
+            "f2b-sshd-v6",
+            "{ 2001:db8::9 }",
+        ]]
     );
 }
 
@@ -509,6 +555,29 @@ async fn is_banned_true_when_ip_present_in_set_listing() {
         .await
         .expect("is_banned should succeed");
     assert!(banned, "ip present in listing must report banned");
+    assert_eq!(
+        read_invocations(&fake.log),
+        vec![vec!["list", "set", "inet", "fail2ban-rs", "f2b-sshd"]]
+    );
+}
+
+/// Reconciliation calls `is_banned`; an IPv6 reconciliation query must read
+/// the IPv6 set rather than the IPv4 set.
+#[tokio::test]
+async fn reconciliation_query_ipv6_targets_ipv6_set() {
+    let fake = fake_nft(0, "set f2b-sshd-v6 {\n  elements = { 2001:db8::5 }\n}\n");
+    let ip: IpAddr = "2001:db8::5".parse().unwrap();
+    let banned = fake
+        .backend
+        .is_banned(&ip, "sshd")
+        .await
+        .expect("is_banned should succeed");
+
+    assert!(banned, "IPv6 address present in listing must report banned");
+    assert_eq!(
+        read_invocations(&fake.log),
+        vec![vec!["list", "set", "inet", "fail2ban-rs", "f2b-sshd-v6"]]
+    );
 }
 
 #[tokio::test]
