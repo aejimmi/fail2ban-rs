@@ -165,10 +165,10 @@ pub(super) async fn reload_config(
 /// The firewall lifecycle actions a reload must perform, computed by diffing
 /// the old and new enabled-jail sets.
 ///
-/// The delta key is *jail name plus backend config*: a jail present in both
-/// configs with the same backend is `kept` (its kernel state is never touched);
-/// a jail whose backend changed is treated as `removed` **and** `added` so the
-/// executor rebuilds its backend.
+/// The delta key is *jail name plus firewall-rule config*: a jail present in
+/// both configs with the same backend, ports, and protocol is `kept` (its
+/// kernel state is never touched); a jail whose rule config changed is treated
+/// as `removed` **and** `added` so the executor rebuilds its firewall rules.
 pub(super) struct FirewallDelta {
     /// Jails to register + initialize (newly enabled or backend-type changed).
     pub(super) added: Vec<String>,
@@ -209,13 +209,26 @@ impl FirewallDelta {
     ) {
         match old_jails.get(name) {
             None => self.added.push(name.to_string()),
-            Some(old_cfg) if backend_differs(&old_cfg.backend, &new_cfg.backend) => {
+            Some(old_cfg) if firewall_rule_config_differs(old_cfg, new_cfg) => {
                 self.removed.push(name.to_string());
                 self.added.push(name.to_string());
             }
             Some(_) => self.kept.push(name.to_string()),
         }
     }
+}
+
+/// Whether two jail configs differ in a way that changes firewall rules.
+///
+/// Ports and protocol are passed to every native backend's `init` method, so
+/// either change requires removing the old rules before creating new ones.
+fn firewall_rule_config_differs(
+    old: &crate::config::JailConfig,
+    new: &crate::config::JailConfig,
+) -> bool {
+    old.port != new.port
+        || old.protocol != new.protocol
+        || backend_differs(&old.backend, &new.backend)
 }
 
 /// Whether two backend configs differ enough to require a rebuild.

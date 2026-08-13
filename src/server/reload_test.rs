@@ -246,6 +246,47 @@ async fn test_reload_delta_backend_type_change_is_remove_then_add() {
     );
 }
 
+/// A port-only change alters every native backend's rule match, so it must
+/// rebuild the jail rather than leave the old port rule installed.
+#[test]
+fn test_reload_delta_port_change_is_remove_then_add() {
+    let old = minimal_config();
+    let mut new = minimal_config();
+    new.jail.get_mut("sshd").unwrap().port = vec!["2222".to_string()];
+
+    let delta = FirewallDelta::compute(&old, &new);
+    assert_eq!(delta.removed, vec!["sshd".to_string()]);
+    assert_eq!(delta.added, vec!["sshd".to_string()]);
+    assert!(delta.kept.is_empty());
+}
+
+/// Changing from all ports to a scoped port list also changes the rule match.
+#[test]
+fn test_reload_delta_empty_to_scoped_port_list_is_remove_then_add() {
+    let mut old = minimal_config();
+    old.jail.get_mut("sshd").unwrap().port.clear();
+    let new = minimal_config();
+
+    let delta = FirewallDelta::compute(&old, &new);
+    assert_eq!(delta.removed, vec!["sshd".to_string()]);
+    assert_eq!(delta.added, vec!["sshd".to_string()]);
+    assert!(delta.kept.is_empty());
+}
+
+/// A protocol-only change must rebuild the rule even when its port list stays
+/// the same.
+#[test]
+fn test_reload_delta_protocol_change_is_remove_then_add() {
+    let old = minimal_config();
+    let mut new = minimal_config();
+    new.jail.get_mut("sshd").unwrap().protocol = "udp".to_string();
+
+    let delta = FirewallDelta::compute(&old, &new);
+    assert_eq!(delta.removed, vec!["sshd".to_string()]);
+    assert_eq!(delta.added, vec!["sshd".to_string()]);
+    assert!(delta.kept.is_empty());
+}
+
 #[tokio::test]
 async fn test_teardown_firewalls_full_success() {
     let (tx, rx) = mpsc::channel::<FirewallCmd>(16);
