@@ -191,6 +191,35 @@ async fn manual_ban_failure_returns_error_via_done() {
     handle.await.unwrap();
 }
 
+#[tokio::test]
+async fn manual_ban_without_backend_returns_error_via_done() {
+    let backends: HashMap<String, Box<dyn FirewallBackend>> = HashMap::new();
+    let (tx, rx) = mpsc::channel(16);
+    let cancel = CancellationToken::new();
+    let (_tracker_rx, _reconcile_tx, handle) = spawn_executor(rx, backends, cancel.clone());
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    tx.send(FirewallCmd::Ban {
+        ip: IpAddr::V4(Ipv4Addr::new(8, 8, 4, 4)),
+        jail_id: "missing".to_string(),
+        banned_at: 1000,
+        expires_at: Some(2000),
+        done: Some(done_tx),
+    })
+    .await
+    .unwrap();
+
+    let error = tokio::time::timeout(std::time::Duration::from_secs(2), done_rx)
+        .await
+        .expect("timeout")
+        .expect("done channel dropped")
+        .expect_err("manual ban without a backend must fail");
+    assert!(error.to_string().contains("no backend registered"));
+
+    cancel.cancel();
+    handle.await.unwrap();
+}
+
 /// (b) Reconciliation re-applies a ban that `is_banned` reports missing.
 #[tokio::test]
 async fn reconcile_reapplies_missing_ban() {
@@ -636,8 +665,8 @@ async fn add_jail_backend_failure_leaves_no_backend_registered() {
         return;
     }
 
-    // A subsequent ban for the same jail_id must take the "no backend" skip
-    // path (Ok) rather than attempting a real (and equally doomed) nft call.
+    // A subsequent acknowledged ban for the same jail_id must report that no
+    // backend was registered rather than claiming success.
     let (ban_done_tx, ban_done_rx) = oneshot::channel();
     tx.send(FirewallCmd::Ban {
         ip: IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
@@ -652,17 +681,15 @@ async fn add_jail_backend_failure_leaves_no_backend_registered() {
         .await
         .expect("timeout")
         .expect("done channel dropped");
-    assert!(
-        ban_result.is_ok(),
-        "ban for a jail whose AddJail failed must skip, not error: {ban_result:?}"
-    );
+    let error = ban_result.expect_err("ban without a registered backend must fail");
+    assert!(error.to_string().contains("no backend registered"));
 
     cancel.cancel();
     handle.await.unwrap();
 }
 
 /// `RemoveJail` must tear down the backend and deregister it: a follow-up
-/// ban for the same jail must then take the "no backend" skip path.
+/// acknowledged ban for the same jail must report that no backend exists.
 #[tokio::test]
 async fn remove_jail_tears_down_and_deregisters_backend() {
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -684,7 +711,7 @@ async fn remove_jail_tears_down_and_deregisters_backend() {
         .expect("done channel dropped");
     assert!(result.is_ok(), "remove should succeed: {result:?}");
 
-    // The backend is gone: a ban for "sshd" must now skip silently.
+    // The backend is gone: an acknowledged ban for "sshd" must now fail.
     let (ban_done_tx, ban_done_rx) = oneshot::channel();
     tx.send(FirewallCmd::Ban {
         ip: IpAddr::V4(Ipv4Addr::new(4, 4, 4, 4)),
@@ -699,10 +726,8 @@ async fn remove_jail_tears_down_and_deregisters_backend() {
         .await
         .expect("timeout")
         .expect("done channel dropped");
-    assert!(
-        ban_result.is_ok(),
-        "ban after removal must skip, not error: {ban_result:?}"
-    );
+    let error = ban_result.expect_err("ban after backend removal must fail");
+    assert!(error.to_string().contains("no backend registered"));
 
     cancel.cancel();
     handle.await.unwrap();

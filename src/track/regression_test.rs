@@ -148,8 +148,7 @@ async fn reban_keeps_new_expiry_no_premature_unban() {
     let ip = IpAddr::V4(Ipv4Addr::new(22, 22, 22, 22));
 
     // Short ban, then immediate unban.
-    manual_ban(&cmd_tx, ip, 2).await;
-    expect_ban(&mut executor_rx).await;
+    manual_ban(&cmd_tx, &mut executor_rx, ip, 2).await;
     manual_unban(&cmd_tx, ip).await;
     let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
         .await
@@ -158,8 +157,7 @@ async fn reban_keeps_new_expiry_no_premature_unban() {
     assert!(matches!(cmd, FirewallCmd::Unban { .. }));
 
     // Re-ban with a long expiry.
-    manual_ban(&cmd_tx, ip, 3600).await;
-    expect_ban(&mut executor_rx).await;
+    manual_ban(&cmd_tx, &mut executor_rx, ip, 3600).await;
 
     // Wait past the old 2s schedule: the fresh ban must still stand.
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), executor_rx.recv()).await;

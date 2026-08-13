@@ -321,6 +321,7 @@ async fn wait_for_cmd(
 /// bans only elsewhere; this exercises the manual-ban code path
 /// (`TrackerCmd::ManualBan`) through the same expiry sweep.
 #[tokio::test]
+#[allow(clippy::panic)]
 async fn manual_ban_with_short_ban_time_is_unbanned_after_expiry() {
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), restore_jail_config());
@@ -363,18 +364,24 @@ async fn manual_ban_with_short_ban_time_is_unbanned_after_expiry() {
         })
         .await
         .unwrap();
+    let ban = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
+        .await
+        .expect("timeout waiting for manual ban")
+        .expect("executor channel closed");
+    let FirewallCmd::Ban {
+        jail_id,
+        done: Some(done),
+        ..
+    } = ban
+    else {
+        panic!("expected acknowledged manual Ban command, got {ban:?}");
+    };
+    assert_eq!(jail_id, "sshd");
+    done.send(Ok(())).expect("tracker dropped ban result");
     respond_rx
         .await
         .unwrap()
         .expect("manual ban should be accepted");
-
-    let got_ban = wait_for_cmd(
-        &mut executor_rx,
-        std::time::Duration::from_secs(2),
-        |cmd| matches!(cmd, FirewallCmd::Ban { jail_id, .. } if jail_id == "sshd"),
-    )
-    .await;
-    assert!(got_ban, "manual ban must emit a FirewallCmd::Ban");
 
     let got_unban = wait_for_cmd(
         &mut executor_rx,

@@ -6,9 +6,11 @@
 
 use std::net::IpAddr;
 
+use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::enforce::FirewallCmd;
+use crate::error::{Error, Result};
 use crate::track::persist::BanCount;
 use crate::track::state::BanRecord;
 use crate::track::tracker_state::{FailKey, TrackerState};
@@ -27,7 +29,7 @@ pub(super) async fn execute_ban(
     manual: bool,
     new_ban_count: Option<u32>,
     s: &mut TrackerState,
-) {
+) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let expires_at = if ban_time < 0 {
         None
@@ -54,18 +56,43 @@ pub(super) async fn execute_ban(
     s.counters.total_bans += 1;
     *s.counters.jail_bans.entry(jail_id.to_string()).or_insert(0) += 1;
 
+    let (done, result_rx) = if manual {
+        let (done_tx, done_rx) = oneshot::channel();
+        (Some(done_tx), Some(done_rx))
+    } else {
+        (None, None)
+    };
     let cmd = FirewallCmd::Ban {
         ip,
         jail_id: jail_id.to_string(),
         banned_at: now,
         expires_at,
-        done: None,
+        done,
     };
     if s.executor_tx.send(cmd).await.is_err() {
         warn!("executor channel closed");
+        if manual {
+            rollback_ban(ip, jail_id, s);
+            return Err(Error::ChannelClosed);
+        }
+    }
+
+    if let Some(result_rx) = result_rx {
+        match result_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                rollback_ban(ip, jail_id, s);
+                return Err(error);
+            }
+            Err(_) => {
+                rollback_ban(ip, jail_id, s);
+                return Err(Error::ChannelClosed);
+            }
+        }
     }
 
     s.notify_ban(ip, jail_id, ban_time, manual);
+    Ok(())
 }
 
 /// Persist the ban record and any updated escalation count in one transaction.
@@ -109,7 +136,7 @@ pub(super) async fn execute_unban(ip: IpAddr, jail_id: &str, manual: bool, s: &m
     s.notify_unban(ip, jail_id, manual);
 }
 
-/// Roll back an automatic ban the firewall failed to apply.
+/// Roll back a ban the firewall failed to apply.
 ///
 /// Deletes the persisted ban record, drops the index entry, and decrements the
 /// counters `execute_ban` bumped. Idempotent via `banned_keys`: a ban already

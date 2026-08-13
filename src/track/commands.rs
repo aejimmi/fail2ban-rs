@@ -116,6 +116,7 @@ async fn do_manual_ban(
             jail: jail_id.to_string(),
         });
     }
+    execute_ban(ip, jail_id, ban_time, true, None, s).await?;
     info!(
         %ip,
         jail = %jail_id,
@@ -123,7 +124,6 @@ async fn do_manual_ban(
         reason = "manual",
         "banned"
     );
-    execute_ban(ip, jail_id, ban_time, true, None, s).await;
     Ok(())
 }
 

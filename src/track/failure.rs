@@ -82,7 +82,7 @@ async fn ban_on_threshold(failure: Failure, s: &mut TrackerState) {
         "banned"
     );
 
-    execute_ban(
+    if let Err(error) = execute_ban(
         failure.ip,
         &failure.jail_id,
         effective_ban_time,
@@ -90,7 +90,15 @@ async fn ban_on_threshold(failure: Failure, s: &mut TrackerState) {
         Some(count + 1),
         s,
     )
-    .await;
+    .await
+    {
+        warn!(
+            ip = %failure.ip,
+            jail = %failure.jail_id,
+            %error,
+            "automatic ban dispatch failed"
+        );
+    }
 }
 
 /// Increment a per-jail counter without cloning the key on the common (hit) path.

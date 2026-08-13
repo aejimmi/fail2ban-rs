@@ -38,7 +38,7 @@ async fn manual_ban_via_cmd() {
     });
 
     let ip = IpAddr::V4(Ipv4Addr::new(60, 60, 60, 60));
-    let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
+    let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(TrackerCmd::ManualBan {
             ip,
@@ -49,15 +49,23 @@ async fn manual_ban_via_cmd() {
         .await
         .unwrap();
 
-    let result = respond_rx.await.unwrap();
-    assert!(result.is_ok());
-
-    // Should receive Ban command.
+    // The tracker must wait for the executor's result before responding.
     let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
         .await
         .expect("timeout")
         .expect("channel closed");
-    assert!(matches!(cmd, FirewallCmd::Ban { .. }));
+    let FirewallCmd::Ban {
+        done: Some(done), ..
+    } = cmd
+    else {
+        panic!("expected acknowledged Ban command, got {cmd:?}");
+    };
+    assert!(
+        respond_rx.try_recv().is_err(),
+        "manual response must wait for firewall completion"
+    );
+    done.send(Ok(())).unwrap();
+    assert!(respond_rx.await.unwrap().is_ok());
 
     cancel.cancel();
     handle.await.unwrap();
