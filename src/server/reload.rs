@@ -127,7 +127,14 @@ pub(super) async fn reload_config(
     let active_bans = query_active_bans(tracker_cmd_tx).await?;
 
     let delta = FirewallDelta::compute(current_config, &new_config);
-    apply_firewall_delta(executor_tx, &delta, &new_config, &active_bans).await?;
+    apply_firewall_delta(
+        executor_tx,
+        &delta,
+        current_config,
+        &new_config,
+        &active_bans,
+    )
+    .await?;
 
     // Cancel old watchers only after the new config is known-good.
     watcher_cancel.cancel();
@@ -254,31 +261,141 @@ fn backend_differs(a: &crate::config::Backend, b: &crate::config::Backend) -> bo
     }
 }
 
-/// Apply a firewall delta in place: remove dropped jails, add new ones and
-/// reapply only their stored bans, and leave unchanged jails alone.
-///
-/// Removed jails are processed before added ones so a backend-type change
-/// (removed **and** added) tears the old state down before building the new.
+/// Apply a firewall delta in place while retaining enough information to roll
+/// back any backend replacements or additions if a later fallible step fails.
 pub(super) async fn apply_firewall_delta(
     executor_tx: &mpsc::Sender<FirewallCmd>,
     delta: &FirewallDelta,
+    old_config: &Config,
     new_config: &Config,
     active_bans: &[BanRecord],
 ) -> crate::error::Result<()> {
     for name in &delta.kept {
         info!(phase = "reload", jail = %name, action = "kept", "firewall state left untouched");
     }
-    for name in &delta.removed {
-        send_remove_jail(executor_tx, name).await;
+
+    let removed: std::collections::HashSet<&str> =
+        delta.removed.iter().map(String::as_str).collect();
+    let added: std::collections::HashSet<&str> = delta.added.iter().map(String::as_str).collect();
+    let replacements: Vec<&str> = delta
+        .added
+        .iter()
+        .map(String::as_str)
+        .filter(|name| removed.contains(name))
+        .collect();
+    let additions: Vec<&str> = delta
+        .added
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !removed.contains(name))
+        .collect();
+
+    let mut completed_replacements = Vec::new();
+    let mut completed_additions = Vec::new();
+
+    for name in replacements {
+        let Some(old_jail) = old_config.jail.get(name) else {
+            continue;
+        };
+        let Some(new_jail) = new_config.jail.get(name) else {
+            continue;
+        };
+        let bans = bans_for_jail(active_bans, name);
+        if let Err(e) = send_replace_jail(executor_tx, name, old_jail, new_jail, bans).await {
+            rollback_firewall_changes(
+                executor_tx,
+                old_config,
+                new_config,
+                active_bans,
+                &completed_additions,
+                &completed_replacements,
+            )
+            .await;
+            return Err(e);
+        }
+        completed_replacements.push(name.to_string());
     }
-    for name in &delta.added {
+
+    for name in additions {
         let Some(jail) = new_config.jail.get(name) else {
             continue;
         };
-        send_add_jail(executor_tx, name, jail).await?;
+        if let Err(e) = send_add_jail(executor_tx, name, jail).await {
+            rollback_firewall_changes(
+                executor_tx,
+                old_config,
+                new_config,
+                active_bans,
+                &completed_additions,
+                &completed_replacements,
+            )
+            .await;
+            return Err(e);
+        }
+        completed_additions.push(name.to_string());
     }
-    let added: std::collections::HashSet<&str> = delta.added.iter().map(String::as_str).collect();
-    reapply_added_bans(executor_tx, active_bans, &added).await
+
+    let additions: std::collections::HashSet<&str> =
+        completed_additions.iter().map(String::as_str).collect();
+    if let Err(e) = reapply_added_bans(executor_tx, active_bans, &additions).await {
+        rollback_firewall_changes(
+            executor_tx,
+            old_config,
+            new_config,
+            active_bans,
+            &completed_additions,
+            &completed_replacements,
+        )
+        .await;
+        return Err(e);
+    }
+
+    // Pure removals are best-effort and happen only after every fallible
+    // replacement/addition has committed, so a failed reload never needs to
+    // recreate an intentionally removed jail.
+    for name in delta
+        .removed
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !added.contains(name))
+    {
+        send_remove_jail(executor_tx, name).await;
+    }
+    Ok(())
+}
+
+fn bans_for_jail(active_bans: &[BanRecord], name: &str) -> Vec<BanRecord> {
+    active_bans
+        .iter()
+        .filter(|ban| ban.jail_id == name)
+        .cloned()
+        .collect()
+}
+
+/// Undo already-completed fallible changes in reverse order. Rollback errors
+/// are logged because the original reload error remains the primary result.
+async fn rollback_firewall_changes(
+    executor_tx: &mpsc::Sender<FirewallCmd>,
+    old_config: &Config,
+    new_config: &Config,
+    active_bans: &[BanRecord],
+    additions: &[String],
+    replacements: &[String],
+) {
+    for name in additions.iter().rev() {
+        send_remove_jail(executor_tx, name).await;
+    }
+    for name in replacements.iter().rev() {
+        let (Some(old_jail), Some(new_jail)) =
+            (old_config.jail.get(name), new_config.jail.get(name))
+        else {
+            continue;
+        };
+        let bans = bans_for_jail(active_bans, name);
+        if let Err(e) = send_replace_jail(executor_tx, name, new_jail, old_jail, bans).await {
+            error!(phase = "reload", jail = %name, error = %e, "firewall rollback failed");
+        }
+    }
 }
 
 /// Register + initialize one added jail's firewall, waiting for the ack.
@@ -305,6 +422,43 @@ async fn send_add_jail(
         }
         Ok(Err(e)) => {
             error!(phase = "reload", jail = %name, error = %e, "firewall jail add failed");
+            Err(e)
+        }
+        Err(_) => Err(crate::error::Error::ChannelClosed),
+    }
+}
+
+/// Replace an existing jail's backend and seed all of its active bans. The
+/// executor owns the rollback transaction so no ban command can interleave.
+async fn send_replace_jail(
+    executor_tx: &mpsc::Sender<FirewallCmd>,
+    name: &str,
+    old_jail: &crate::config::JailConfig,
+    new_jail: &crate::config::JailConfig,
+    active_bans: Vec<BanRecord>,
+) -> crate::error::Result<()> {
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let cmd = FirewallCmd::ReplaceJail {
+        jail_id: name.to_string(),
+        backend: new_jail.backend.clone(),
+        old_ports: old_jail.port.clone(),
+        old_protocol: old_jail.protocol.clone(),
+        new_ports: new_jail.port.clone(),
+        new_protocol: new_jail.protocol.clone(),
+        active_bans,
+        done: done_tx,
+    };
+    executor_tx
+        .send(cmd)
+        .await
+        .map_err(|_| crate::error::Error::ChannelClosed)?;
+    match done_rx.await {
+        Ok(Ok(())) => {
+            info!(phase = "reload", jail = %name, action = "replaced", "firewall jail replaced");
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            error!(phase = "reload", jail = %name, error = %e, "firewall jail replacement failed");
             Err(e)
         }
         Err(_) => Err(crate::error::Error::ChannelClosed),

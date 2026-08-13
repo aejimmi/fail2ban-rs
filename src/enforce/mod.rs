@@ -68,7 +68,7 @@ pub enum FirewallCmd {
     },
     /// Register a newly added jail's backend and initialize its firewall rules.
     ///
-    /// Used on config reload when a jail is added (or its backend type changed).
+    /// Used on config reload when a jail is newly added.
     /// The executor builds the backend from `backend`, initializes its kernel
     /// state, then inserts it into the backend map — so bans can be applied to a
     /// set/chain that already exists. This never touches other jails' state.
@@ -79,11 +79,27 @@ pub enum FirewallCmd {
         protocol: String,
         done: oneshot::Sender<Result<()>>,
     },
+    /// Transactionally replace an existing jail's backend during reload.
+    ///
+    /// The executor retains ownership of the old backend until the replacement
+    /// is initialized and all active bans have been restored. If either step
+    /// fails, it reinitializes the old backend and reapplies the same bans
+    /// before acknowledging the reload failure.
+    ReplaceJail {
+        jail_id: String,
+        backend: Backend,
+        old_ports: Vec<String>,
+        old_protocol: String,
+        new_ports: Vec<String>,
+        new_protocol: String,
+        active_bans: Vec<BanRecord>,
+        done: oneshot::Sender<Result<()>>,
+    },
     /// Tear down a removed jail's firewall rules and deregister its backend.
     ///
-    /// Used on config reload when a jail is removed (or its backend type
-    /// changed). The teardown drops the jail's kernel state (chain/set and every
-    /// banned element); the backend object is then removed from the map.
+    /// Used on config reload when a jail is removed. The teardown drops the
+    /// jail's kernel state (chain/set and every banned element); the backend
+    /// object is then removed from the map.
     RemoveJail {
         jail_id: String,
         done: oneshot::Sender<Result<()>>,

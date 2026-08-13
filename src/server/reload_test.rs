@@ -34,6 +34,18 @@ fn spawn_mock_executor(
                     log.push(format!("add:{jail_id}"));
                     let _ = done.send(Ok(()));
                 }
+                FirewallCmd::ReplaceJail {
+                    jail_id,
+                    active_bans,
+                    done,
+                    ..
+                } => {
+                    log.push(format!("replace:{jail_id}"));
+                    for ban in active_bans {
+                        log.push(format!("replace_ban:{}:{}", ban.ip, ban.jail_id));
+                    }
+                    let _ = done.send(Ok(()));
+                }
                 FirewallCmd::RemoveJail { jail_id, done } => {
                     log.push(format!("remove:{jail_id}"));
                     let _ = done.send(Ok(()));
@@ -116,7 +128,7 @@ async fn test_reload_delta_keeps_unchanged_jail_silent() {
         banned_at: 1000,
         expires_at: Some(9999),
     }];
-    apply_firewall_delta(&tx, &delta, &new, &bans)
+    apply_firewall_delta(&tx, &delta, &old, &new, &bans)
         .await
         .unwrap();
 
@@ -158,7 +170,7 @@ async fn test_reload_delta_adds_jail_and_reapplies_only_its_bans() {
             expires_at: Some(9999),
         },
     ];
-    apply_firewall_delta(&tx, &delta, &new, &bans)
+    apply_firewall_delta(&tx, &delta, &old, &new, &bans)
         .await
         .unwrap();
 
@@ -196,15 +208,17 @@ async fn test_reload_delta_removes_only_dropped_jail() {
     assert_eq!(delta.kept, vec!["sshd".to_string()]);
     assert!(delta.added.is_empty());
 
-    apply_firewall_delta(&tx, &delta, &new, &[]).await.unwrap();
+    apply_firewall_delta(&tx, &delta, &old, &new, &[])
+        .await
+        .unwrap();
 
     drop(tx);
     let log = handle.await.unwrap();
     assert_eq!(log, vec!["remove:nginx".to_string()], "log: {log:?}");
 }
 
-/// (d) A backend-TYPE change for an existing jail must be treated as remove +
-/// add (torn down, then rebuilt and its bans reapplied) — never as `kept`.
+/// (d) A backend-TYPE change for an existing jail must use the executor's
+/// transactional replacement command and seed its active bans.
 #[tokio::test]
 async fn test_reload_delta_backend_type_change_is_remove_then_add() {
     let (tx, rx) = mpsc::channel::<FirewallCmd>(16);
@@ -228,21 +242,60 @@ async fn test_reload_delta_backend_type_change_is_remove_then_add() {
         banned_at: 1000,
         expires_at: Some(9999),
     }];
-    apply_firewall_delta(&tx, &delta, &new, &bans)
+    apply_firewall_delta(&tx, &delta, &old, &new, &bans)
         .await
         .unwrap();
 
     drop(tx);
     let log = handle.await.unwrap();
-    let remove_idx = log.iter().position(|c| c == "remove:sshd");
-    let add_idx = log.iter().position(|c| c == "add:sshd");
+    assert_eq!(log[0], "replace:sshd", "log: {log:?}");
     assert!(
-        remove_idx.is_some() && add_idx.is_some() && remove_idx < add_idx,
-        "backend type change must remove before add: {log:?}"
-    );
-    assert!(
-        log.contains(&"ban:9.9.9.9:sshd".to_string()),
+        log.contains(&"replace_ban:9.9.9.9:sshd".to_string()),
         "rebuilt jail's ban must be reapplied: {log:?}"
+    );
+}
+
+/// If a later addition fails, reload must reverse an already-committed backend
+/// replacement before returning the error and retaining the old config.
+#[tokio::test]
+async fn test_reload_delta_rolls_back_replacement_when_later_add_fails() {
+    let (tx, mut rx) = mpsc::channel::<FirewallCmd>(16);
+    let handle = tokio::spawn(async move {
+        let mut log = Vec::new();
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                FirewallCmd::ReplaceJail { jail_id, done, .. } => {
+                    log.push(format!("replace:{jail_id}"));
+                    let _ = done.send(Ok(()));
+                }
+                FirewallCmd::AddJail { jail_id, done, .. } => {
+                    log.push(format!("add:{jail_id}"));
+                    let _ = done.send(Err(crate::error::Error::firewall("mock add failure")));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+        log
+    });
+
+    let old = minimal_config();
+    let mut new = minimal_config();
+    new.jail.get_mut("sshd").unwrap().backend = crate::config::Backend::Script {
+        ban_cmd: "true".to_string(),
+        unban_cmd: "true".to_string(),
+    };
+    new.jail.insert("nginx".to_string(), test_jail_config());
+    let delta = FirewallDelta::compute(&old, &new);
+
+    let result = apply_firewall_delta(&tx, &delta, &old, &new, &[]).await;
+    assert!(result.is_err(), "failed addition must fail reload");
+
+    drop(tx);
+    let log = handle.await.unwrap();
+    assert_eq!(
+        log,
+        ["replace:sshd", "add:nginx", "replace:sshd"],
+        "the final replacement command must restore the old backend"
     );
 }
 
@@ -274,7 +327,7 @@ async fn test_add_jail_fails_on_channel_closed() {
     new.jail.insert("nginx".to_string(), test_jail_config());
     let delta = FirewallDelta::compute(&old, &new);
 
-    let result = apply_firewall_delta(&tx, &delta, &new, &[]).await;
+    let result = apply_firewall_delta(&tx, &delta, &old, &new, &[]).await;
     assert!(
         matches!(result, Err(crate::error::Error::ChannelClosed)),
         "expected ChannelClosed, got: {result:?}"

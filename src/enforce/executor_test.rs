@@ -636,8 +636,7 @@ async fn add_jail_backend_failure_leaves_no_backend_registered() {
         return;
     }
 
-    // A subsequent ban for the same jail_id must take the "no backend" skip
-    // path (Ok) rather than attempting a real (and equally doomed) nft call.
+    // A subsequent ban for the same jail_id must report the missing backend.
     let (ban_done_tx, ban_done_rx) = oneshot::channel();
     tx.send(FirewallCmd::Ban {
         ip: IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
@@ -653,16 +652,121 @@ async fn add_jail_backend_failure_leaves_no_backend_registered() {
         .expect("timeout")
         .expect("done channel dropped");
     assert!(
-        ban_result.is_ok(),
-        "ban for a jail whose AddJail failed must skip, not error: {ban_result:?}"
+        ban_result.is_err(),
+        "ban for a jail whose AddJail failed must error: {ban_result:?}"
     );
 
     cancel.cancel();
     handle.await.unwrap();
 }
 
+/// Regression for #17: if replacement initialization fails after the old
+/// backend was torn down, the executor must rebuild/reseed the old backend and
+/// leave it registered for subsequent enforcement.
+#[tokio::test]
+async fn failed_backend_replacement_restores_old_backend_and_keeps_it_functional() {
+    let (old_backend, old_calls) = MockBackend::new();
+    let mut backends: HashMap<String, Box<dyn FirewallBackend>> = HashMap::new();
+    backends.insert("sshd".to_string(), Box::new(old_backend));
+    let stored_ban = BanRecord {
+        ip: IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+        jail_id: "sshd".to_string(),
+        banned_at: 1000,
+        expires_at: Some(9999),
+    };
+
+    let result = replace_jail_with_backend(
+        &mut backends,
+        "sshd",
+        Box::new(FailingInitMockBackend),
+        &["22".to_string()],
+        "tcp",
+        &["443".to_string()],
+        "tcp",
+        std::slice::from_ref(&stored_ban),
+    )
+    .await;
+    assert!(result.is_err(), "replacement must report its init failure");
+
+    let (tracker_tx, _tracker_rx) = mpsc::channel(1);
+    let (done_tx, done_rx) = oneshot::channel();
+    apply_ban(
+        &backends,
+        &tracker_tx,
+        IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+        "sshd",
+        None,
+        Some(done_tx),
+    )
+    .await;
+    assert!(done_rx.await.expect("done channel dropped").is_ok());
+
+    let calls = old_calls.lock().expect("lock");
+    assert_eq!(
+        calls.as_slice(),
+        [
+            "teardown:sshd",
+            "init:sshd",
+            "ban:8.8.8.8:sshd",
+            "ban:9.9.9.9:sshd",
+        ],
+        "old backend must be fully restored and handle later bans"
+    );
+}
+
+/// A successful replacement must seed stored bans on the new backend and route
+/// all subsequent bans to it, without reinitializing the old backend.
+#[tokio::test]
+async fn successful_backend_replacement_commits_new_backend() {
+    let (old_backend, old_calls) = MockBackend::new();
+    let (new_backend, new_calls) = MockBackend::new();
+    let mut backends: HashMap<String, Box<dyn FirewallBackend>> = HashMap::new();
+    backends.insert("sshd".to_string(), Box::new(old_backend));
+    let stored_ban = BanRecord {
+        ip: IpAddr::V4(Ipv4Addr::new(8, 8, 4, 4)),
+        jail_id: "sshd".to_string(),
+        banned_at: 1000,
+        expires_at: None,
+    };
+
+    replace_jail_with_backend(
+        &mut backends,
+        "sshd",
+        Box::new(new_backend),
+        &["22".to_string()],
+        "tcp",
+        &["443".to_string()],
+        "tcp",
+        std::slice::from_ref(&stored_ban),
+    )
+    .await
+    .expect("replacement should succeed");
+
+    let (tracker_tx, _tracker_rx) = mpsc::channel(1);
+    let (done_tx, done_rx) = oneshot::channel();
+    apply_ban(
+        &backends,
+        &tracker_tx,
+        IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+        "sshd",
+        None,
+        Some(done_tx),
+    )
+    .await;
+    assert!(done_rx.await.expect("done channel dropped").is_ok());
+
+    assert_eq!(
+        old_calls.lock().expect("lock").as_slice(),
+        ["teardown:sshd"]
+    );
+    assert_eq!(
+        new_calls.lock().expect("lock").as_slice(),
+        ["init:sshd", "ban:8.8.4.4:sshd", "ban:1.1.1.1:sshd"]
+    );
+}
+
 /// `RemoveJail` must tear down the backend and deregister it: a follow-up
-/// ban for the same jail must then take the "no backend" skip path.
+/// ban for the same jail must then report the missing backend.
 #[tokio::test]
 async fn remove_jail_tears_down_and_deregisters_backend() {
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -684,7 +788,7 @@ async fn remove_jail_tears_down_and_deregisters_backend() {
         .expect("done channel dropped");
     assert!(result.is_ok(), "remove should succeed: {result:?}");
 
-    // The backend is gone: a ban for "sshd" must now skip silently.
+    // The backend is gone: a ban for "sshd" must now fail explicitly.
     let (ban_done_tx, ban_done_rx) = oneshot::channel();
     tx.send(FirewallCmd::Ban {
         ip: IpAddr::V4(Ipv4Addr::new(4, 4, 4, 4)),
@@ -700,8 +804,8 @@ async fn remove_jail_tears_down_and_deregisters_backend() {
         .expect("timeout")
         .expect("done channel dropped");
     assert!(
-        ban_result.is_ok(),
-        "ban after removal must skip, not error: {ban_result:?}"
+        ban_result.is_err(),
+        "ban after removal must report an error: {ban_result:?}"
     );
 
     cancel.cancel();

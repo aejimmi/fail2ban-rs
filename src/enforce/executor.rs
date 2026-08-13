@@ -108,6 +108,29 @@ async fn handle_cmd<S: BuildHasher>(
             protocol,
             done,
         } => add_jail(backends, jail_id, &backend, &ports, &protocol, done).await,
+        FirewallCmd::ReplaceJail {
+            jail_id,
+            backend,
+            old_ports,
+            old_protocol,
+            new_ports,
+            new_protocol,
+            active_bans,
+            done,
+        } => {
+            replace_jail(
+                backends,
+                jail_id,
+                &backend,
+                &old_ports,
+                &old_protocol,
+                &new_ports,
+                &new_protocol,
+                &active_bans,
+                done,
+            )
+            .await;
+        }
         FirewallCmd::RemoveJail { jail_id, done } => remove_jail(backends, &jail_id, done).await,
     }
 }
@@ -143,6 +166,122 @@ async fn register_jail<S: BuildHasher>(
     let created = create_backend(backend)?;
     created.init(jail_id, ports, protocol).await?;
     backends.insert(jail_id.to_string(), created);
+    Ok(())
+}
+
+/// Replace one backend as a transaction, restoring the previous backend when
+/// replacement initialization or ban reapplication fails.
+#[allow(clippy::too_many_arguments)]
+async fn replace_jail<S: BuildHasher>(
+    backends: &mut HashMap<String, Box<dyn FirewallBackend>, S>,
+    jail_id: String,
+    backend: &Backend,
+    old_ports: &[String],
+    old_protocol: &str,
+    new_ports: &[String],
+    new_protocol: &str,
+    active_bans: &[BanRecord],
+    done: oneshot::Sender<Result<()>>,
+) {
+    debug!(jail = %jail_id, "firewall replacing jail backend");
+    let result = match create_backend(backend) {
+        Ok(replacement) => {
+            replace_jail_with_backend(
+                backends,
+                &jail_id,
+                replacement,
+                old_ports,
+                old_protocol,
+                new_ports,
+                new_protocol,
+                active_bans,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(ref e) = result {
+        error!(jail = %jail_id, error = %e, "firewall replace jail failed");
+    }
+    let _ = done.send(result);
+}
+
+/// Transaction core split out so rollback behavior can be tested with fully
+/// deterministic in-memory backends.
+#[allow(clippy::too_many_arguments)]
+async fn replace_jail_with_backend<S: BuildHasher>(
+    backends: &mut HashMap<String, Box<dyn FirewallBackend>, S>,
+    jail_id: &str,
+    replacement: Box<dyn FirewallBackend>,
+    old_ports: &[String],
+    old_protocol: &str,
+    new_ports: &[String],
+    new_protocol: &str,
+    active_bans: &[BanRecord],
+) -> Result<()> {
+    let Some(previous) = backends.remove(jail_id) else {
+        return Err(crate::error::Error::firewall(format!(
+            "cannot replace jail '{jail_id}': no backend is registered"
+        )));
+    };
+
+    if let Err(e) = previous.teardown(jail_id).await {
+        backends.insert(jail_id.to_string(), previous);
+        return Err(e);
+    }
+
+    let replacement_result = async {
+        replacement.init(jail_id, new_ports, new_protocol).await?;
+        reapply_backend_bans(replacement.as_ref(), jail_id, active_bans).await
+    }
+    .await;
+
+    match replacement_result {
+        Ok(()) => {
+            backends.insert(jail_id.to_string(), replacement);
+            Ok(())
+        }
+        Err(replacement_error) => {
+            // Initialization may have created only part of a backend's state.
+            // Remove that state before rebuilding the previous backend.
+            if let Err(e) = replacement.teardown(jail_id).await {
+                warn!(jail = %jail_id, error = %e, "replacement cleanup failed");
+            }
+
+            let restore_result = async {
+                previous.init(jail_id, old_ports, old_protocol).await?;
+                reapply_backend_bans(previous.as_ref(), jail_id, active_bans).await
+            }
+            .await;
+
+            // Keep the old backend registered even when restoration reports an
+            // error, so later bans fail explicitly or reconciliation can heal
+            // it rather than entering a permanent no-backend state.
+            backends.insert(jail_id.to_string(), previous);
+
+            match restore_result {
+                Ok(()) => Err(replacement_error),
+                Err(restore_error) => Err(crate::error::Error::firewall(format!(
+                    "backend replacement failed: {replacement_error}; rollback failed: {restore_error}"
+                ))),
+            }
+        }
+    }
+}
+
+async fn reapply_backend_bans(
+    backend: &dyn FirewallBackend,
+    jail_id: &str,
+    active_bans: &[BanRecord],
+) -> Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    for ban in active_bans {
+        if ban.jail_id == jail_id {
+            backend
+                .ban_with_timeout(&ban.ip, jail_id, ban.expires_at, now)
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -185,8 +324,10 @@ async fn apply_ban<S: BuildHasher>(
             .ban_with_timeout(&ip, jail_id, expires_at, now)
             .await
     } else {
-        warn!(%ip, jail = %jail_id, reason = "no_backend", "ban skipped");
-        Ok(())
+        let error =
+            crate::error::Error::firewall(format!("no backend registered for jail '{jail_id}'"));
+        warn!(%ip, jail = %jail_id, reason = "no_backend", "ban failed");
+        Err(error)
     };
     if let Err(ref e) = result {
         error!(%ip, jail = %jail_id, error = %e, "ban failed");
