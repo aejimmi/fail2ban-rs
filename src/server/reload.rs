@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -66,8 +66,8 @@ pub(super) async fn reload_config(
     request_jail_reconciles(tracker_cmd_tx, delta.replacements()).await;
     applied?;
 
+    let jail_count = update_tracker_config(tracker_cmd_tx, &new_config).await?;
     restart_watchers(new_watcher_plan, failure_tx, watchers).await;
-    let jail_count = update_tracker_config(tracker_cmd_tx, &new_config).await;
     if let Some(t) = logger {
         t.log_reload(jail_count);
     }
@@ -106,23 +106,29 @@ async fn restart_watchers(
 async fn update_tracker_config(
     tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
     config: &Config,
-) -> usize {
+) -> crate::error::Result<usize> {
     let jails: HashMap<String, _> = config
         .enabled_jails()
         .map(|(name, cfg)| (name.to_string(), cfg.clone()))
         .collect();
     let jail_count = jails.len();
+    let (respond, ack) = oneshot::channel();
     let cmd = TrackerCmd::UpdateConfig {
         global: config.global.clone(),
         jails,
+        respond,
     };
-    if tracker_cmd_tx.send(cmd).await.is_err() {
-        warn!(
-            phase = "reload",
-            "tracker gone; config update not delivered"
-        );
-    }
-    jail_count
+    tracker_cmd_tx
+        .send(cmd)
+        .await
+        .map_err(|_| crate::error::Error::ChannelClosed)?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), ack)
+        .await
+        .map_err(|_| {
+            crate::error::Error::firewall("tracker config update acknowledgement timed out")
+        })?
+        .map_err(|_| crate::error::Error::ChannelClosed)?;
+    Ok(jail_count)
 }
 
 /// Send `TeardownJailFull` commands for each jail name (daemon shutdown).

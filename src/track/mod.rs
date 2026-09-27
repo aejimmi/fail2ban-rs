@@ -101,6 +101,7 @@ pub enum TrackerCmd {
     UpdateConfig {
         global: crate::config::GlobalConfig,
         jails: HashMap<String, JailConfig>,
+        respond: oneshot::Sender<()>,
     },
 }
 

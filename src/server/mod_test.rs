@@ -111,10 +111,11 @@ fn spawn_tracker_stub(
                 TrackerCmd::QueryBans { respond } => {
                     let _ = respond.send(Vec::new());
                 }
-                TrackerCmd::UpdateConfig { jails, .. } => {
+                TrackerCmd::UpdateConfig { jails, respond, .. } => {
                     let mut names: Vec<String> = jails.keys().cloned().collect();
                     names.sort();
                     log_clone.lock().expect("lock").push(names);
+                    let _ = respond.send(());
                 }
                 _ => {}
             }

@@ -94,6 +94,10 @@ fn spawn_appending_tracker(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
+            if let TrackerCmd::UpdateConfig { respond, .. } = cmd {
+                let _ = respond.send(());
+                continue;
+            }
             let TrackerCmd::ForwardFirewall { build, .. } = cmd else {
                 continue;
             };

@@ -87,7 +87,10 @@ fn spawn_tracker_recorder(
                     executor_tx.send(build(Vec::new())).await.unwrap();
                 }
                 TrackerCmd::ReconcileJail { jail_id } => log.push(format!("reconcile:{jail_id}")),
-                TrackerCmd::UpdateConfig { .. } => log.push("update_config".to_string()),
+                TrackerCmd::UpdateConfig { respond, .. } => {
+                    log.push("update_config".to_string());
+                    let _ = respond.send(());
+                }
                 _ => log.push("other".to_string()),
             }
         }
@@ -207,4 +210,29 @@ async fn test_send_and_ack_full_queue_times_out() {
             .to_string()
             .contains("did not acknowledge")
     );
+}
+
+#[tokio::test]
+async fn test_update_tracker_config_closed_channel_is_error() {
+    let (tx, rx) = mpsc::channel(1);
+    drop(rx);
+    let config = Config::parse(&sshd_toml(false)).expect("config");
+    let result = super::update_tracker_config(&tx, &config).await;
+    assert!(matches!(result, Err(crate::error::Error::ChannelClosed)));
+}
+
+#[tokio::test]
+async fn test_update_tracker_config_requires_application_ack() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let config = Config::parse(&sshd_toml(false)).expect("config");
+    let waiter = tokio::spawn(async move { super::update_tracker_config(&tx, &config).await });
+    let Some(TrackerCmd::UpdateConfig { respond, .. }) = rx.recv().await else {
+        panic!("expected tracker update");
+    };
+    assert!(
+        !waiter.is_finished(),
+        "enqueue alone must not complete reload"
+    );
+    respond.send(()).expect("ack");
+    assert!(waiter.await.expect("join").is_ok());
 }

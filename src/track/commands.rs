@@ -43,7 +43,14 @@ pub(super) async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
             forward_firewall(&jail_id, build, s).await;
         }
         TrackerCmd::GetStats { respond } => reply(respond, build_stats(s)),
-        TrackerCmd::UpdateConfig { global, jails } => apply_config_update(s, &global, &jails),
+        TrackerCmd::UpdateConfig {
+            global,
+            jails,
+            respond,
+        } => {
+            apply_config_update(s, &global, &jails);
+            reply(respond, ());
+        }
         TrackerCmd::ReconcileJail { jail_id } => request_jail_reconcile(&jail_id, s),
     }
 }

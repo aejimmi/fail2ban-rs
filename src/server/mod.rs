@@ -40,7 +40,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
 
     let mut daemon = start_tasks(config, config_path, restored, logger, cancel).await?;
     info!(phase = "startup", "fail2ban-rs started");
-    daemon.serve().await;
+    let result = daemon.serve().await;
 
     // Graceful shutdown: close Tell client, then let tasks drain.
     if let Some(t) = daemon.logger.take() {
@@ -48,7 +48,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
     info!(phase = "shutdown", "fail2ban-rs stopped");
-    Ok(())
+    result
 }
 
 /// Wire the channels and spawn the executor, tracker, watchers, and control
@@ -197,7 +197,7 @@ struct Daemon {
 
 impl Daemon {
     /// Serve signals and control requests until shutdown.
-    async fn serve(&mut self) {
+    async fn serve(&mut self) -> crate::error::Result<()> {
         // Registered once: a signal delivered while a reload or control
         // request runs inline is buffered, not lost.
         let mut signals = Signals::register();
@@ -206,16 +206,19 @@ impl Daemon {
                 sig = signals.next() => match sig {
                     DaemonSignal::Shutdown => {
                         self.shutdown().await;
-                        return;
+                        return Ok(());
                     }
-                    DaemonSignal::Reload => self.reload_on_sighup().await,
+                    DaemonSignal::Reload => self.reload_on_sighup().await?,
                 },
                 cmd = self.control_rx.recv() => {
                     let Some(ctrl) = cmd else {
                         info!("control channel closed");
-                        return;
+                        return Ok(());
                     };
                     self.dispatch(ctrl).await;
+                    if self.tracker_cmd_tx.is_closed() {
+                        return Err(crate::error::Error::ChannelClosed);
+                    }
                 }
             }
         }
@@ -232,7 +235,7 @@ impl Daemon {
     }
 
     /// Reload the config in response to SIGHUP.
-    async fn reload_on_sighup(&mut self) {
+    async fn reload_on_sighup(&mut self) -> crate::error::Result<()> {
         info!(
             phase = "reload",
             trigger = "sighup",
@@ -250,8 +253,14 @@ impl Daemon {
         .await;
         match result {
             Ok(()) => info!(phase = "reload", "config reload complete"),
-            Err(e) => error!(phase = "reload", error = %e, "config reload failed"),
+            Err(e) => {
+                error!(phase = "reload", error = %e, "config reload failed");
+                if self.tracker_cmd_tx.is_closed() {
+                    return Err(crate::error::Error::ChannelClosed);
+                }
+            }
         }
+        Ok(())
     }
 
     /// Serve one control request. Tracker-bound requests are answered on a
