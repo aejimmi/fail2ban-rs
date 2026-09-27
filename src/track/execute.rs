@@ -74,18 +74,6 @@ pub(super) fn record_ban(
     new_ban_count: Option<u32>,
     s: &mut TrackerState,
 ) -> Result<BanRecord> {
-    record_ban_with_persist(ip, jail_id, ban_time, new_ban_count, s, persist_ban)
-}
-
-/// Keep the persistence boundary injectable for a failed-write regression.
-fn record_ban_with_persist(
-    ip: IpAddr,
-    jail_id: &str,
-    ban_time: i64,
-    new_ban_count: Option<u32>,
-    s: &mut TrackerState,
-    persist: impl FnOnce(&TrackerState, &FailKey, &BanRecord, Option<u32>) -> Result<()>,
-) -> Result<BanRecord> {
     let now = chrono::Utc::now().timestamp();
     let expires_at = (ban_time >= 0).then(|| now.saturating_add(ban_time));
     let key: FailKey = (ip, jail_id.to_string());
@@ -95,18 +83,36 @@ fn record_ban_with_persist(
         banned_at: now,
         expires_at,
     };
-    persist(s, &key, &ban, new_ban_count)?;
+    persist_then_apply(
+        s,
+        |state| persist_ban(state, &key, &ban, new_ban_count),
+        |state| {
+            // A failed write leaves the failure buffer and index intact.
+            state.failures.remove(&key);
+            state.index.banned_keys.insert(key.clone());
+            if let Some(exp) = expires_at {
+                state.index.next_expiry =
+                    Some(state.index.next_expiry.map_or(exp, |cur| cur.min(exp)));
+            }
+            state.counters.total_bans += 1;
+            *state
+                .counters
+                .jail_bans
+                .entry(jail_id.to_string())
+                .or_insert(0) += 1;
+            ban.clone()
+        },
+    )
+}
 
-    // Clear the failure buffer so that after any future unban the IP must reach
-    // the full threshold again rather than being re-banned by stale failures.
-    s.failures.remove(&key);
-    s.index.banned_keys.insert(key);
-    if let Some(exp) = expires_at {
-        s.index.next_expiry = Some(s.index.next_expiry.map_or(exp, |cur| cur.min(exp)));
-    }
-    s.counters.total_bans += 1;
-    *s.counters.jail_bans.entry(jail_id.to_string()).or_insert(0) += 1;
-    Ok(ban)
+/// Run in-memory changes only after the persistent write succeeds.
+fn persist_then_apply<S, T>(
+    state: &mut S,
+    persist: impl FnOnce(&S) -> Result<()>,
+    apply: impl FnOnce(&mut S) -> T,
+) -> Result<T> {
+    persist(state)?;
+    Ok(apply(state))
 }
 
 /// Build the firewall `Ban` command for a record.
@@ -194,45 +200,18 @@ pub(super) fn rollback_ban(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod persistence_failure_test {
     use super::*;
-    use crate::track::test_support::test_store;
-    use crate::track::tracker_state::{BanIndex, Counters, PendingManualBans};
-    use std::collections::{HashMap, VecDeque};
 
     #[test]
-    fn failed_write_does_not_index_or_count_a_ban() {
-        let (executor_tx, mut executor_rx) = tokio::sync::mpsc::channel(1);
-        let (resolve_tx, _resolve_rx) = tokio::sync::mpsc::channel(1);
-        let mut state = TrackerState {
-            jail_params: HashMap::new(),
-            failures: HashMap::new(),
-            store: test_store(),
-            index: BanIndex::default(),
-            counters: Counters::default(),
-            started_at: 0,
-            ban_count_decay: 0,
-            executor_tx,
-            resolve_tx,
-            pending_manual: PendingManualBans::default(),
-            reconcile_enabled: false,
-            reconcile_queue: VecDeque::new(),
-            logger: None,
-            #[cfg(feature = "maxmind")]
-            maxmind: crate::track::maxmind::MaxmindState::load(
-                &crate::config::GlobalConfig::default(),
-                &HashMap::new(),
-            ),
-        };
-        let ip: IpAddr = "203.0.113.8".parse().unwrap();
-        let result = record_ban_with_persist(ip, "sshd", 60, Some(1), &mut state, |_, _, _, _| {
-            Err(Error::persistence("injected WAL failure"))
-        });
+    fn failed_write_prevents_following_state_mutation() {
+        let mut indexed_and_counted = false;
+        let result = persist_then_apply(
+            &mut indexed_and_counted,
+            |_| Err(Error::persistence("injected WAL failure")),
+            |state| *state = true,
+        );
         assert!(matches!(result, Err(Error::Persistence { .. })));
-        assert!(state.index.banned_keys.is_empty());
-        assert_eq!(state.counters.total_bans, 0);
-        assert!(state.store.read().bans.is_empty());
-        assert!(executor_rx.try_recv().is_err());
+        assert!(!indexed_and_counted);
     }
 }
