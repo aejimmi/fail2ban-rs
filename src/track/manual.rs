@@ -64,7 +64,13 @@ pub(super) async fn start_manual_ban(
         reply(respond, Err(e));
         return;
     }
-    let ban = record_ban(ip, &jail_id, ban_time, None, s);
+    let ban = match record_ban(ip, &jail_id, ban_time, None, s) {
+        Ok(ban) => ban,
+        Err(e) => {
+            reply(respond, Err(e));
+            return;
+        }
+    };
     let Some(done_rx) = dispatch_ban(&ban, s).await else {
         rollback_ban(ip, &jail_id, RollbackReason::ChannelClosed, s);
         reply(respond, Err(Error::ChannelClosed));

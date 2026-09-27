@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::enforce::FirewallCmd;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::track::persist::BanCount;
 use crate::track::state::BanRecord;
 use crate::track::tracker_state::{FailKey, TrackerState};
@@ -50,7 +50,13 @@ pub(super) async fn execute_ban(
     new_ban_count: Option<u32>,
     s: &mut TrackerState,
 ) {
-    let ban = record_ban(ip, jail_id, ban_time, new_ban_count, s);
+    let ban = match record_ban(ip, jail_id, ban_time, new_ban_count, s) {
+        Ok(ban) => ban,
+        Err(e) => {
+            warn!(%ip, jail = %jail_id, error = %e, "ban not applied because persistence failed");
+            return;
+        }
+    };
     if s.executor_tx.send(ban_cmd(&ban, None)).await.is_err() {
         warn!(%ip, jail = %jail_id, "executor channel closed");
         rollback_ban(ip, jail_id, RollbackReason::ChannelClosed, s);
@@ -67,7 +73,19 @@ pub(super) fn record_ban(
     ban_time: i64,
     new_ban_count: Option<u32>,
     s: &mut TrackerState,
-) -> BanRecord {
+) -> Result<BanRecord> {
+    record_ban_with_persist(ip, jail_id, ban_time, new_ban_count, s, persist_ban)
+}
+
+/// Keep the persistence boundary injectable for a failed-write regression.
+fn record_ban_with_persist(
+    ip: IpAddr,
+    jail_id: &str,
+    ban_time: i64,
+    new_ban_count: Option<u32>,
+    s: &mut TrackerState,
+    persist: impl FnOnce(&TrackerState, &FailKey, &BanRecord, Option<u32>) -> Result<()>,
+) -> Result<BanRecord> {
     let now = chrono::Utc::now().timestamp();
     let expires_at = (ban_time >= 0).then(|| now.saturating_add(ban_time));
     let key: FailKey = (ip, jail_id.to_string());
@@ -77,7 +95,7 @@ pub(super) fn record_ban(
         banned_at: now,
         expires_at,
     };
-    persist_ban(s, &key, &ban, new_ban_count);
+    persist(s, &key, &ban, new_ban_count)?;
 
     // Clear the failure buffer so that after any future unban the IP must reach
     // the full threshold again rather than being re-banned by stale failures.
@@ -88,7 +106,7 @@ pub(super) fn record_ban(
     }
     s.counters.total_bans += 1;
     *s.counters.jail_bans.entry(jail_id.to_string()).or_insert(0) += 1;
-    ban
+    Ok(ban)
 }
 
 /// Build the firewall `Ban` command for a record.
@@ -103,23 +121,28 @@ pub(super) fn ban_cmd(ban: &BanRecord, done: Option<oneshot::Sender<Result<()>>>
 }
 
 /// Persist the ban record and any updated escalation count in one transaction.
-fn persist_ban(s: &TrackerState, key: &FailKey, ban: &BanRecord, new_ban_count: Option<u32>) {
-    if let Err(e) = s.store.write(|tx| {
-        tx.bans.put(key.clone(), ban.clone())?;
-        if let Some(count) = new_ban_count {
-            // Stamp the ban timestamp so the sweep can decay stale counters.
-            tx.ban_counts.put(
-                ban.ip,
-                BanCount {
-                    count,
-                    last_ban: ban.banned_at,
-                },
-            )?;
-        }
-        Ok(())
-    }) {
-        warn!(error = %e, "state persist failed: {e}");
-    }
+fn persist_ban(
+    s: &TrackerState,
+    key: &FailKey,
+    ban: &BanRecord,
+    new_ban_count: Option<u32>,
+) -> Result<()> {
+    s.store
+        .write(|tx| {
+            tx.bans.put(key.clone(), ban.clone())?;
+            if let Some(count) = new_ban_count {
+                // Stamp the ban timestamp so the sweep can decay stale counters.
+                tx.ban_counts.put(
+                    ban.ip,
+                    BanCount {
+                        count,
+                        last_ban: ban.banned_at,
+                    },
+                )?;
+            }
+            Ok(())
+        })
+        .map_err(|e| Error::persistence(format!("recording ban: {e}")))
 }
 
 /// Shared unban execution: drop the ban index entry, update counters, send
@@ -168,4 +191,48 @@ pub(super) fn rollback_ban(
         *v = v.saturating_sub(1);
     }
     warn!(%ip, jail = %jail_id, reason = reason.as_str(), "ban rolled back");
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod persistence_failure_test {
+    use super::*;
+    use crate::track::test_support::test_store;
+    use crate::track::tracker_state::{BanIndex, Counters, PendingManualBans};
+    use std::collections::{HashMap, VecDeque};
+
+    #[test]
+    fn failed_write_does_not_index_or_count_a_ban() {
+        let (executor_tx, mut executor_rx) = tokio::sync::mpsc::channel(1);
+        let (resolve_tx, _resolve_rx) = tokio::sync::mpsc::channel(1);
+        let mut state = TrackerState {
+            jail_params: HashMap::new(),
+            failures: HashMap::new(),
+            store: test_store(),
+            index: BanIndex::default(),
+            counters: Counters::default(),
+            started_at: 0,
+            ban_count_decay: 0,
+            executor_tx,
+            resolve_tx,
+            pending_manual: PendingManualBans::default(),
+            reconcile_enabled: false,
+            reconcile_queue: VecDeque::new(),
+            logger: None,
+            #[cfg(feature = "maxmind")]
+            maxmind: crate::track::maxmind::MaxmindState::load(
+                &crate::config::GlobalConfig::default(),
+                &HashMap::new(),
+            ),
+        };
+        let ip: IpAddr = "203.0.113.8".parse().unwrap();
+        let result = record_ban_with_persist(ip, "sshd", 60, Some(1), &mut state, |_, _, _, _| {
+            Err(Error::persistence("injected WAL failure"))
+        });
+        assert!(matches!(result, Err(Error::Persistence { .. })));
+        assert!(state.index.banned_keys.is_empty());
+        assert_eq!(state.counters.total_bans, 0);
+        assert!(state.store.read().bans.is_empty());
+        assert!(executor_rx.try_recv().is_err());
+    }
 }
