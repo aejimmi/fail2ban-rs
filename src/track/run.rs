@@ -24,6 +24,7 @@ use crate::track::persist::{BanCount, BanState};
 use crate::track::state::BanRecord;
 use crate::track::sweep::{process_unbans, request_reconcile};
 use crate::track::tracker_state::{BanIndex, Counters, PendingManualBans, TrackerState};
+use crate::track::unban::{UnbanOutcome, handle_unban_outcome};
 
 /// How often the tracker asks the executor to reconcile active bans against the
 /// firewall (seconds). Deliberately low-frequency: `is_banned` shells out per IP.
@@ -55,10 +56,12 @@ pub async fn run(
     warn_maxmind_disabled(&global_config);
 
     let (resolve_tx, resolve_rx) = mpsc::channel(RESOLVE_CHANNEL_SIZE);
+    let (unban_outcome_tx, unban_outcome_rx) = mpsc::channel(RESOLVE_CHANNEL_SIZE);
     let io = StateIo {
         executor_tx,
         reconcile,
         resolve_tx,
+        unban_outcome_tx,
         store,
         logger,
     };
@@ -70,6 +73,7 @@ pub async fn run(
         failure: failure_rx,
         cmd: cmd_rx,
         resolve: resolve_rx,
+        unban: unban_outcome_rx,
     };
     event_loop(state, rx, cancel).await;
 }
@@ -79,6 +83,7 @@ struct TrackerRx {
     failure: mpsc::Receiver<Failure>,
     cmd: mpsc::Receiver<TrackerCmd>,
     resolve: mpsc::Receiver<ManualBanOutcome>,
+    unban: mpsc::Receiver<UnbanOutcome>,
 }
 
 /// One event observed by the tracker loop.
@@ -87,6 +92,7 @@ enum Event {
     Failure(Option<Failure>),
     Cmd(Option<TrackerCmd>),
     Outcome(Option<ManualBanOutcome>),
+    UnbanOutcome(Option<UnbanOutcome>),
     Sweep,
     Reconcile,
 }
@@ -103,6 +109,7 @@ async fn event_loop(mut state: TrackerState, mut rx: TrackerRx, cancel: Cancella
             f = rx.failure.recv() => Event::Failure(f),
             c = rx.cmd.recv() => Event::Cmd(c),
             o = rx.resolve.recv() => Event::Outcome(o),
+            o = rx.unban.recv() => Event::UnbanOutcome(o),
             () = tokio::time::sleep(next_unban_sleep) => Event::Sweep,
             _ = reconcile_interval.tick() => Event::Reconcile,
         };
@@ -132,6 +139,11 @@ async fn handle_event(event: Event, s: &mut TrackerState) -> bool {
                 handle_manual_ban_outcome(o, s).await;
             }
         }
+        Event::UnbanOutcome(o) => {
+            if let Some(o) = o {
+                handle_unban_outcome(o, s);
+            }
+        }
         Event::Sweep => process_unbans(s).await,
         Event::Reconcile => request_reconcile(s),
     }
@@ -153,6 +165,7 @@ struct StateIo {
     executor_tx: mpsc::Sender<FirewallCmd>,
     reconcile: bool,
     resolve_tx: mpsc::Sender<ManualBanOutcome>,
+    unban_outcome_tx: mpsc::Sender<UnbanOutcome>,
     store: Arc<Store<BanState, WalBackend<BanState>>>,
     logger: Option<Logger>,
 }
@@ -190,7 +203,10 @@ fn init_state(
         ban_count_decay: global_config.ban_count_decay,
         executor_tx: io.executor_tx,
         resolve_tx: io.resolve_tx,
+        unban_outcome_tx: io.unban_outcome_tx,
         pending_manual: PendingManualBans::default(),
+        pending_unbans: std::collections::HashSet::new(),
+        unban_retry_after: HashMap::new(),
         reconcile_enabled: io.reconcile,
         reconcile_queue: VecDeque::new(),
         logger: io.logger,

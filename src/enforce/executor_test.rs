@@ -61,6 +61,7 @@ async fn test_ban_and_unban_order() {
     tx.send(FirewallCmd::Unban {
         ip,
         jail_id: "sshd".to_string(),
+        done: None,
     })
     .await
     .unwrap();
@@ -426,6 +427,7 @@ async fn test_reconcile_then_unban_is_processed_in_order() {
     tx.send(FirewallCmd::Unban {
         ip,
         jail_id: "sshd".to_string(),
+        done: None,
     })
     .await
     .unwrap();

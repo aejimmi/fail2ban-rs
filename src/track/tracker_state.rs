@@ -20,6 +20,7 @@ use crate::track::manual::ManualBanOutcome;
 #[cfg(feature = "maxmind")]
 use crate::track::maxmind::MaxmindState;
 use crate::track::persist::BanState;
+use crate::track::unban::UnbanOutcome;
 
 /// Key identifying a failure/ban stream: the offending IP and the jail id.
 pub(super) type FailKey = (IpAddr, String);
@@ -111,6 +112,9 @@ pub(super) struct TrackerState {
     pub(super) resolve_tx: mpsc::Sender<ManualBanOutcome>,
     /// Manual bans awaiting their firewall acknowledgement.
     pub(super) pending_manual: PendingManualBans,
+    pub(super) pending_unbans: HashSet<FailKey>,
+    pub(super) unban_retry_after: HashMap<FailKey, i64>,
+    pub(super) unban_outcome_tx: mpsc::Sender<UnbanOutcome>,
     /// Whether reconcile requests are sent to the executor. They travel on
     /// `executor_tx`, ordered with this tracker's bans and unbans.
     pub(super) reconcile_enabled: bool,

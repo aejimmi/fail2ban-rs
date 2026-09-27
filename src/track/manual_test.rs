@@ -211,8 +211,14 @@ async fn test_manual_ban_stale_outcome_after_unban_leaves_state() {
         })
         .await
         .unwrap();
+    let FirewallCmd::Unban {
+        done: Some(done), ..
+    } = h.next_cmd().await
+    else {
+        panic!("expected unban")
+    };
+    done.send(Ok(())).unwrap();
     assert!(unban_rx.await.unwrap().is_ok());
-    assert!(matches!(h.next_cmd().await, FirewallCmd::Unban { .. }));
 
     ack.send(Err(crate::error::Error::firewall("late")))
         .unwrap();
@@ -316,8 +322,14 @@ async fn test_manual_ban_stale_timeout_after_reban_sends_no_unban() {
         })
         .await
         .unwrap();
+    let FirewallCmd::Unban {
+        done: Some(done), ..
+    } = h.next_cmd().await
+    else {
+        panic!("expected unban")
+    };
+    done.send(Ok(())).unwrap();
     assert!(unban_rx.await.unwrap().is_ok());
-    assert!(matches!(h.next_cmd().await, FirewallCmd::Unban { .. }));
 
     let second_rx = h.send_manual_ban(ip(10)).await;
     h.take_ban_ack().await.send(Ok(())).unwrap();

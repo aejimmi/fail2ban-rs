@@ -7,10 +7,11 @@ use tracing::{debug, info, warn};
 
 use crate::enforce::FirewallCmd;
 use crate::track::ban_calc::build_jail_params;
-use crate::track::execute::{RollbackReason, execute_unban, rollback_ban};
+use crate::track::execute::{RollbackReason, rollback_ban};
 use crate::track::manual::{reply, start_manual_ban};
 use crate::track::sweep::request_jail_reconcile;
 use crate::track::tracker_state::TrackerState;
+use crate::track::unban::start_unban;
 use crate::track::{FirewallCmdBuilder, JailStats, Stats, TrackerCmd};
 
 /// Dispatch a single [`TrackerCmd`] against the tracker state.
@@ -33,7 +34,7 @@ pub(super) async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
             ip,
             jail_id,
             respond,
-        } => reply(respond, do_manual_unban(ip, &jail_id, s).await),
+        } => do_manual_unban(ip, &jail_id, respond, s).await,
         TrackerCmd::BanApplyFailed {
             ip,
             jail_id,
@@ -67,6 +68,7 @@ async fn rollback_failed_ban(ip: IpAddr, jail_id: &str, banned_at: i64, s: &mut 
     let cmd = FirewallCmd::Unban {
         ip,
         jail_id: jail_id.to_string(),
+        done: None,
     };
     if s.executor_tx.send(cmd).await.is_err() {
         warn!(%ip, jail = %jail_id, "executor channel closed; rollback unban dropped");
@@ -76,12 +78,14 @@ async fn rollback_failed_ban(ip: IpAddr, jail_id: &str, banned_at: i64, s: &mut 
 /// Build a firewall command from the jail's current bans and enqueue it
 /// behind every `Ban`/`Unban` the tracker has already sent.
 async fn forward_firewall(jail_id: &str, build: FirewallCmdBuilder, s: &TrackerState) {
+    // An unban is still persisted until its acknowledgement, but must not be
+    // replayed by a backend replacement queued behind that unban.
     let bans: Vec<_> = s
         .store
         .read()
         .bans
         .values()
-        .filter(|b| b.jail_id == jail_id)
+        .filter(|b| b.jail_id == jail_id && !s.pending_unbans.contains(&(b.ip, b.jail_id.clone())))
         .cloned()
         .collect();
     debug!(jail = %jail_id, bans = bans.len(), "forwarding firewall command");
@@ -144,32 +148,28 @@ fn apply_config_update(
 async fn do_manual_unban(
     ip: IpAddr,
     jail_id: &str,
+    respond: tokio::sync::oneshot::Sender<crate::error::Result<()>>,
     s: &mut TrackerState,
-) -> crate::error::Result<()> {
+) {
     if !s.jail_params.contains_key(jail_id) {
-        return Err(crate::error::Error::config(format!(
-            "unknown jail: {jail_id}"
-        )));
+        reply(
+            respond,
+            Err(crate::error::Error::config(format!(
+                "unknown jail: {jail_id}"
+            ))),
+        );
+        return;
     }
     let key = (ip, jail_id.to_string());
     if !s.index.banned_keys.contains(&key) {
-        return Err(crate::error::Error::NotBanned {
-            ip,
-            jail: jail_id.to_string(),
-        });
+        reply(
+            respond,
+            Err(crate::error::Error::NotBanned {
+                ip,
+                jail: jail_id.to_string(),
+            }),
+        );
+        return;
     }
-    if let Err(e) = s.store.write(|tx| {
-        tx.bans.delete(&key);
-        Ok(())
-    }) {
-        warn!(error = %e, "state persist failed: {e}");
-    }
-    info!(
-        %ip,
-        jail = %jail_id,
-        reason = "manual",
-        "unbanned"
-    );
-    execute_unban(ip, jail_id, true, s).await;
-    Ok(())
+    start_unban(ip, jail_id.to_string(), true, Some(respond), s).await;
 }

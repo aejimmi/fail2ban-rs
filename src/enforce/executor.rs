@@ -82,7 +82,12 @@ async fn handle_cmd<S: BuildHasher>(
     match cmd {
         ban @ FirewallCmd::Ban { .. } => handle_ban(ban, backends, tracker_tx).await,
         FirewallCmd::Reconcile { bans } => reconcile_bans(backends, bans).await,
-        FirewallCmd::Unban { ip, jail_id } => apply_unban(backends, ip, &jail_id).await,
+        FirewallCmd::Unban { ip, jail_id, done } => {
+            let result = apply_unban(backends, ip, &jail_id).await;
+            if let Some(done) = done {
+                send_done(done, result, &jail_id);
+            }
+        }
         FirewallCmd::InitJail {
             jail_id,
             ports,
@@ -196,15 +201,19 @@ async fn apply_unban<S: BuildHasher>(
     backends: &HashMap<String, Box<dyn FirewallBackend>, S>,
     ip: IpAddr,
     jail_id: &str,
-) {
+) -> Result<()> {
     debug!(%ip, jail = %jail_id, "firewall applying unban");
     let Some(backend) = backends.get(jail_id) else {
         warn!(%ip, jail = %jail_id, reason = "no_backend", "unban skipped");
-        return;
+        return Err(Error::firewall(format!(
+            "no backend registered for jail {jail_id}"
+        )));
     };
-    if let Err(e) = backend.unban(&ip, jail_id).await {
+    let result = backend.unban(&ip, jail_id).await;
+    if let Err(ref e) = result {
         warn!(%ip, jail = %jail_id, error = %e, "unban failed");
     }
+    result
 }
 
 /// Initialize a jail's firewall rules, replying on `done`.

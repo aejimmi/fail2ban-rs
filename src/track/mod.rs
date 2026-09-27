@@ -23,6 +23,7 @@ mod manual;
 mod run;
 mod sweep;
 mod tracker_state;
+mod unban;
 
 pub use run::run;
 

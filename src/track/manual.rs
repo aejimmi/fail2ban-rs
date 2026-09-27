@@ -183,6 +183,7 @@ async fn queue_timeout_unban(ip: IpAddr, jail_id: &str, s: &TrackerState) {
     let unban = FirewallCmd::Unban {
         ip,
         jail_id: jail_id.to_string(),
+        done: None,
     };
     if s.executor_tx.send(unban).await.is_err() {
         debug!(%ip, jail = %jail_id, "executor gone; timeout unban not queued");

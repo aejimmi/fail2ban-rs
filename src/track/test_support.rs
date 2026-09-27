@@ -95,7 +95,11 @@ pub(crate) async fn manual_ban(
 }
 
 /// Send a `ManualUnban` command for the `sshd` jail and assert it succeeds.
-pub(crate) async fn manual_unban(cmd_tx: &mpsc::Sender<TrackerCmd>, ip: IpAddr) {
+pub(crate) async fn manual_unban(
+    cmd_tx: &mpsc::Sender<TrackerCmd>,
+    executor_rx: &mut mpsc::Receiver<FirewallCmd>,
+    ip: IpAddr,
+) {
     let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(TrackerCmd::ManualUnban {
@@ -105,6 +109,14 @@ pub(crate) async fn manual_unban(cmd_tx: &mpsc::Sender<TrackerCmd>, ip: IpAddr) 
         })
         .await
         .unwrap();
+    let cmd = executor_rx.recv().await.expect("unban command");
+    let FirewallCmd::Unban {
+        done: Some(done), ..
+    } = cmd
+    else {
+        panic!("expected acknowledged unban: {cmd:?}");
+    };
+    done.send(Ok(())).expect("unban ack");
     assert!(respond_rx.await.unwrap().is_ok());
 }
 

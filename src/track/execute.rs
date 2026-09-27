@@ -122,23 +122,6 @@ fn persist_ban(s: &TrackerState, key: &FailKey, ban: &BanRecord, new_ban_count: 
     }
 }
 
-/// Shared unban execution: drop the ban index entry, update counters, send
-/// firewall command, notify. The store record is deleted by the caller.
-pub(super) async fn execute_unban(ip: IpAddr, jail_id: &str, manual: bool, s: &mut TrackerState) {
-    let key = (ip, jail_id.to_string());
-    s.index.banned_keys.remove(&key);
-    s.pending_manual.by_key.remove(&key);
-    s.counters.total_unbans += 1;
-    let cmd = FirewallCmd::Unban {
-        ip,
-        jail_id: jail_id.to_string(),
-    };
-    if s.executor_tx.send(cmd).await.is_err() {
-        warn!("executor channel closed");
-    }
-    s.notify_unban(ip, jail_id, manual);
-}
-
 /// Roll back a ban the firewall never applied.
 ///
 /// Deletes the persisted ban record, drops the index entry, and decrements the

@@ -10,10 +10,10 @@ use tracing::{debug, info, warn};
 
 use crate::enforce::FirewallCmd;
 use crate::track::ban_calc::JailParams;
-use crate::track::execute::execute_unban;
 use crate::track::persist::BanState;
 use crate::track::state::BanRecord;
 use crate::track::tracker_state::{FailKey, FailState, TrackerState};
+use crate::track::unban::start_unban;
 
 /// Cap on the number of bans verified per reconcile tick, bounding the
 /// executor's per-tick shell-outs. The rotating queue covers the remainder on
@@ -34,7 +34,15 @@ pub(super) async fn process_unbans(s: &mut TrackerState) {
         .bans
         .iter()
         .filter_map(|(key, ban)| match ban.expires_at {
-            Some(exp) if exp <= now => Some(key.clone()),
+            Some(exp)
+                if exp <= now
+                    && !s.pending_unbans.contains(key)
+                    && s.unban_retry_after
+                        .get(key)
+                        .is_none_or(|retry| *retry <= now) =>
+            {
+                Some(key.clone())
+            }
             _ => None,
         })
         .collect();
@@ -49,8 +57,19 @@ pub(super) async fn process_unbans(s: &mut TrackerState) {
         .store
         .read()
         .bans
-        .values()
-        .filter_map(|b| b.expires_at)
+        .iter()
+        .filter_map(|(key, b)| {
+            b.expires_at.map(|exp| {
+                if s.pending_unbans.contains(key) {
+                    i64::MAX
+                } else {
+                    s.unban_retry_after
+                        .get(key)
+                        .copied()
+                        .map_or(exp, |retry| exp.max(retry))
+                }
+            })
+        })
         .min();
 }
 
@@ -101,14 +120,7 @@ pub(super) fn prune_decayed_ban_counts(
 /// Delete an expired ban from the store and run shared unban handling.
 async fn unban_expired(key: FailKey, s: &mut TrackerState) {
     let (ip, ref jail_id) = key;
-    if let Err(e) = s.store.write(|tx| {
-        tx.bans.delete(&key);
-        Ok(())
-    }) {
-        warn!(error = %e, "state persist failed: {e}");
-    }
-    info!(%ip, jail = %jail_id, reason = "expired", "unbanned");
-    execute_unban(ip, jail_id, false, s).await;
+    start_unban(ip, jail_id.clone(), false, None, s).await;
 }
 
 /// Drop failure buffers whose newest timestamp already falls outside the jail's
@@ -144,7 +156,10 @@ pub(super) fn request_reconcile(s: &mut TrackerState) {
         &mut s.reconcile_queue,
         &store_state.bans,
         RECONCILE_MAX_BANS,
-    );
+    )
+    .into_iter()
+    .filter(|b| !s.pending_unbans.contains(&(b.ip, b.jail_id.clone())))
+    .collect::<Vec<_>>();
     drop(store_state);
     if bans.is_empty() {
         return;
@@ -201,6 +216,7 @@ pub(super) fn request_jail_reconcile(jail_id: &str, s: &TrackerState) {
         .bans
         .values()
         .filter(|b| b.jail_id == jail_id)
+        .filter(|b| !s.pending_unbans.contains(&(b.ip, b.jail_id.clone())))
         .cloned()
         .collect();
     info!(jail = %jail_id, bans = bans.len(), "jail reconcile requested");

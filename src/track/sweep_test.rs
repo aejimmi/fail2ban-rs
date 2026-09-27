@@ -78,6 +78,7 @@ async fn test_unban_timer_fires() {
             Ok(Some(FirewallCmd::Unban {
                 ip: unban_ip,
                 jail_id,
+                ..
             })) => {
                 assert_eq!(unban_ip, ip);
                 assert_eq!(jail_id, "sshd");

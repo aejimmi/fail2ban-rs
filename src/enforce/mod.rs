@@ -52,7 +52,11 @@ pub enum FirewallCmd {
         done: Option<oneshot::Sender<Result<()>>>,
     },
     /// Unban an IP in the firewall.
-    Unban { ip: IpAddr, jail_id: String },
+    Unban {
+        ip: IpAddr,
+        jail_id: String,
+        done: Option<tokio::sync::oneshot::Sender<crate::error::Result<()>>>,
+    },
     /// Initialize firewall rules for a jail.
     InitJail {
         jail_id: String,

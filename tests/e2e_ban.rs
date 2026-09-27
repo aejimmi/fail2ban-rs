@@ -386,7 +386,7 @@ async fn test_manual_ban_with_short_ban_time_is_unbanned_after_expiry() {
     let got_unban = wait_for_cmd(
         &mut executor_rx,
         std::time::Duration::from_secs(4),
-        |cmd| matches!(cmd, FirewallCmd::Unban { ip: unbanned, jail_id } if *unbanned == ip && jail_id == "sshd"),
+        |cmd| matches!(cmd, FirewallCmd::Unban { ip: unbanned, jail_id, .. } if *unbanned == ip && jail_id == "sshd"),
     )
     .await;
     assert!(

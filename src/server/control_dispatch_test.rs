@@ -251,30 +251,37 @@ async fn test_control_request_ban_and_unban_round_trip_through_real_tracker() {
     }
 
     // Unban through the real dispatch path.
-    let response = handle_control_request(
+    let response_fut = handle_control_request(
         Request::Unban {
             ip,
             jail: "sshd".to_string(),
         },
         &harness.tracker_cmd_tx,
         &mut ctx,
-    )
-    .await;
+    );
+    let backend_fut = async {
+        let cmd = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            harness.executor_rx.recv(),
+        )
+        .await
+        .expect("timeout waiting for Unban on the executor channel")
+        .expect("executor channel closed");
+        let FirewallCmd::Unban {
+            ip: unbanned_ip,
+            done: Some(done),
+            ..
+        } = cmd
+        else {
+            panic!("expected acknowledged Unban for {ip}, got {cmd:?}");
+        };
+        assert_eq!(unbanned_ip, ip);
+        done.send(Ok(())).expect("unban ack");
+    };
+    let (response, ()) = tokio::join!(response_fut, backend_fut);
     assert!(
         matches!(response, Response::Ok { .. }),
         "unban should succeed: {response:?}"
-    );
-
-    let cmd = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        harness.executor_rx.recv(),
-    )
-    .await
-    .expect("timeout waiting for Unban on the executor channel")
-    .expect("executor channel closed");
-    assert!(
-        matches!(cmd, FirewallCmd::Unban { ip: unbanned_ip, .. } if unbanned_ip == ip),
-        "expected FirewallCmd::Unban for {ip}, got {cmd:?}"
     );
 
     // Banning an unknown jail must be rejected before it ever reaches the

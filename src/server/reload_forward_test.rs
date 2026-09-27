@@ -74,8 +74,11 @@ pub(crate) fn spawn_mock_executor(
                         let _ = done.send(Ok(()));
                     }
                 }
-                FirewallCmd::Unban { ip, jail_id } => {
+                FirewallCmd::Unban { ip, jail_id, done } => {
                     log.push(format!("unban:{ip}:{jail_id}"));
+                    if let Some(done) = done {
+                        let _ = done.send(Ok(()));
+                    }
                 }
                 FirewallCmd::Reconcile { bans } => log.push(format!("reconcile:{}", bans.len())),
             }
@@ -212,8 +215,11 @@ fn spawn_stateful_executor(
                     }
                     done.send(Ok(())).unwrap();
                 }
-                FirewallCmd::Unban { ip, jail_id } => {
+                FirewallCmd::Unban { ip, jail_id, done } => {
                     sets.entry(jail_id).or_default().remove(&ip);
+                    if let Some(done) = done {
+                        let _ = done.send(Ok(()));
+                    }
                 }
                 FirewallCmd::Ban { ip, jail_id, .. } => {
                     sets.entry(jail_id).or_default().insert(ip);
@@ -315,8 +321,8 @@ async fn test_reload_unban_during_reload_is_not_rebanned() {
         respond,
     };
     tracker_tx.send(unban).await.unwrap();
-    unbanned.await.unwrap().expect("manual unban");
     go_tx.send(()).await.unwrap();
+    unbanned.await.unwrap().expect("manual unban");
 
     reload.await.unwrap().expect("reload");
     cancel.cancel();

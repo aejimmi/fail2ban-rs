@@ -71,12 +71,18 @@ async fn test_reban_requires_full_threshold_after_unban() {
         })
         .await
         .unwrap();
-    assert!(respond_rx.await.unwrap().is_ok());
     let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
         .await
         .expect("timeout")
         .expect("closed");
-    assert!(matches!(cmd, FirewallCmd::Unban { .. }));
+    let FirewallCmd::Unban {
+        done: Some(done), ..
+    } = cmd
+    else {
+        panic!("expected unban")
+    };
+    done.send(Ok(())).unwrap();
+    assert!(respond_rx.await.unwrap().is_ok());
 
     // Two fresh failures (< max_retry): buffer was cleared, so no re-ban.
     for i in 0..2 {
@@ -149,12 +155,7 @@ async fn test_reban_keeps_new_expiry_no_premature_unban() {
 
     // Short ban, then immediate unban.
     manual_ban(&cmd_tx, &mut executor_rx, ip, 2).await;
-    manual_unban(&cmd_tx, ip).await;
-    let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
-        .await
-        .expect("timeout")
-        .expect("closed");
-    assert!(matches!(cmd, FirewallCmd::Unban { .. }));
+    manual_unban(&cmd_tx, &mut executor_rx, ip).await;
 
     // Re-ban with a long expiry.
     manual_ban(&cmd_tx, &mut executor_rx, ip, 3600).await;
@@ -220,12 +221,7 @@ async fn test_ban_count_escalates_across_bans() {
     }
     assert_eq!(expect_ban(&mut executor_rx).await, 10);
 
-    manual_unban(&cmd_tx, ip).await;
-    let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), executor_rx.recv())
-        .await
-        .expect("timeout")
-        .expect("closed");
-    assert!(matches!(cmd, FirewallCmd::Unban { .. }));
+    manual_unban(&cmd_tx, &mut executor_rx, ip).await;
 
     // Cycle 2: count 1 → 10 * 2^1 = 20s.
     for i in 0..3 {
@@ -324,7 +320,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
     // entry (ReplaceJail/Reconcile) cannot be orphaned.
     let cmd = executor_rx.try_recv().expect("rollback must send Unban");
     assert!(
-        matches!(cmd, FirewallCmd::Unban { ip: u, ref jail_id } if u == ip && jail_id == "sshd"),
+        matches!(cmd, FirewallCmd::Unban { ip: u, ref jail_id, .. } if u == ip && jail_id == "sshd"),
         "expected Unban, got {cmd:?}"
     );
 
