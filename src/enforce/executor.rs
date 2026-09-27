@@ -324,10 +324,9 @@ async fn apply_ban<S: BuildHasher>(
             .ban_with_timeout(&ip, jail_id, expires_at, now)
             .await
     } else {
-        let error =
-            crate::error::Error::firewall(format!("no backend registered for jail '{jail_id}'"));
-        warn!(%ip, jail = %jail_id, reason = "no_backend", "ban failed");
-        Err(error)
+        Err(crate::error::Error::firewall(format!(
+            "no backend registered for jail {jail_id}"
+        )))
     };
     if let Err(ref e) = result {
         error!(%ip, jail = %jail_id, error = %e, "ban failed");

@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::control::{Request, Response};
-use crate::enforce::FirewallCmd;
+use crate::enforce::{FirewallBackend, FirewallCmd};
 use crate::track::TrackerCmd;
 use crate::track::persist::BanState;
 
@@ -32,6 +32,40 @@ fn test_config() -> Config {
         "#,
     )
     .expect("test config parses")
+}
+
+struct FailingBanBackend;
+
+#[async_trait::async_trait]
+impl FirewallBackend for FailingBanBackend {
+    async fn init(
+        &self,
+        _jail: &str,
+        _ports: &[String],
+        _protocol: &str,
+    ) -> crate::error::Result<()> {
+        Ok(())
+    }
+
+    async fn teardown(&self, _jail: &str) -> crate::error::Result<()> {
+        Ok(())
+    }
+
+    async fn ban(&self, _ip: &IpAddr, _jail: &str) -> crate::error::Result<()> {
+        Err(crate::error::Error::firewall("mock ban failure"))
+    }
+
+    async fn unban(&self, _ip: &IpAddr, _jail: &str) -> crate::error::Result<()> {
+        Ok(())
+    }
+
+    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> crate::error::Result<bool> {
+        Ok(false)
+    }
+
+    fn name(&self) -> &'static str {
+        "failing-ban"
+    }
 }
 
 #[test]
@@ -206,15 +240,36 @@ async fn control_request_ban_and_unban_round_trip_through_real_tracker() {
     }
 
     // Ban through the real dispatch path.
-    let response = handle_control_request(
+    let response_fut = handle_control_request(
         Request::Ban {
             ip,
             jail: "sshd".to_string(),
         },
         &harness.tracker_cmd_tx,
         &mut ctx,
-    )
-    .await;
+    );
+    let backend_fut = async {
+        let cmd = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            harness.executor_rx.recv(),
+        )
+        .await
+        .expect("timeout waiting for Ban on the executor channel")
+        .expect("executor channel closed");
+        let FirewallCmd::Ban {
+            ip: banned_ip,
+            jail_id,
+            done: Some(done),
+            ..
+        } = cmd
+        else {
+            panic!("expected acknowledged FirewallCmd::Ban, got {cmd:?}");
+        };
+        assert_eq!(banned_ip, ip);
+        assert_eq!(jail_id, "sshd");
+        done.send(Ok(())).expect("tracker dropped backend result");
+    };
+    let (response, ()) = tokio::join!(response_fut, backend_fut);
     match response {
         Response::Ok { message, .. } => {
             let msg = message.expect("ban response has a message");
@@ -222,27 +277,6 @@ async fn control_request_ban_and_unban_round_trip_through_real_tracker() {
             assert!(msg.contains("sshd"), "got: {msg}");
         }
         Response::Error { message } => panic!("ban should succeed, got error: {message}"),
-    }
-
-    // The real executor channel must have received the Ban command — proof
-    // the request reached the tracker rather than short-circuiting.
-    let cmd = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        harness.executor_rx.recv(),
-    )
-    .await
-    .expect("timeout waiting for Ban on the executor channel")
-    .expect("executor channel closed");
-    match cmd {
-        FirewallCmd::Ban {
-            ip: banned_ip,
-            jail_id,
-            ..
-        } => {
-            assert_eq!(banned_ip, ip);
-            assert_eq!(jail_id, "sshd");
-        }
-        other => panic!("expected FirewallCmd::Ban, got {other:?}"),
     }
 
     // ListBans must reflect the just-applied ban.
@@ -318,6 +352,115 @@ async fn control_request_ban_and_unban_round_trip_through_real_tracker() {
 
     harness.tracker_cancel.cancel();
     harness.tracker_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn control_request_reports_backend_ban_failure_after_tracker_rollback() {
+    let mut config = test_config();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store =
+        etchdb::Store::<BanState, etchdb::WalBackend<BanState>>::open_wal(dir.path().to_path_buf())
+            .expect("open WAL store");
+    let store = Arc::new(store);
+    let jail_configs: HashMap<String, _> = config
+        .jail
+        .iter()
+        .filter(|(_, jail)| jail.enabled)
+        .map(|(name, jail)| (name.clone(), jail.clone()))
+        .collect();
+
+    let (failure_tx, failure_rx) = mpsc::channel(16);
+    let (executor_tx, executor_rx) = mpsc::channel(16);
+    let (reconcile_tx, reconcile_rx) = mpsc::channel(4);
+    let (tracker_cmd_tx, tracker_cmd_rx) = mpsc::channel(16);
+    let cancel = CancellationToken::new();
+
+    let tracker_cancel = cancel.child_token();
+    let tracker_store = Arc::clone(&store);
+    let tracker_handle = tokio::spawn(async move {
+        crate::track::run(
+            crate::config::GlobalConfig::default(),
+            jail_configs,
+            failure_rx,
+            tracker_cmd_rx,
+            executor_tx,
+            Some(reconcile_tx),
+            vec![],
+            HashMap::new(),
+            tracker_store,
+            None,
+            tracker_cancel,
+        )
+        .await;
+    });
+
+    let mut backends: HashMap<String, Box<dyn FirewallBackend>> = HashMap::new();
+    backends.insert("sshd".to_string(), Box::new(FailingBanBackend));
+    let executor_cancel = cancel.child_token();
+    let executor_tracker_tx = tracker_cmd_tx.clone();
+    let executor_handle = tokio::spawn(async move {
+        crate::enforce::run(
+            executor_rx,
+            reconcile_rx,
+            backends,
+            executor_tracker_tx,
+            executor_cancel,
+        )
+        .await;
+    });
+
+    let (unused_executor_tx, _unused_executor_rx) = mpsc::channel::<FirewallCmd>(4);
+    let (unused_failure_tx, _unused_failure_rx) = mpsc::channel(4);
+    let mut watcher_cancel = CancellationToken::new();
+    let config_path = std::path::PathBuf::from("/nonexistent/fail2ban-rs-test.toml");
+    let mut ctx = ReloadContext {
+        config_path: &config_path,
+        executor_tx: &unused_executor_tx,
+        config: &mut config,
+        watcher_cancel: &mut watcher_cancel,
+        failure_tx: &unused_failure_tx,
+        logger: None,
+    };
+    let ip = "203.0.113.99".parse().unwrap();
+
+    let response = handle_control_request(
+        Request::Ban {
+            ip,
+            jail: "sshd".to_string(),
+        },
+        &tracker_cmd_tx,
+        &mut ctx,
+    )
+    .await;
+    match response {
+        Response::Error { message } => {
+            assert!(message.contains("mock ban failure"), "got: {message}");
+        }
+        Response::Ok { .. } => panic!("failed backend ban must not report success"),
+    }
+
+    match handle_control_request(Request::ListBans, &tracker_cmd_tx, &mut ctx).await {
+        Response::Ok {
+            data: Some(data), ..
+        } => {
+            assert_eq!(data["bans"].as_array().unwrap().len(), 0);
+        }
+        other => panic!("expected empty ban list after rollback, got {other:?}"),
+    }
+    match handle_control_request(Request::Stats, &tracker_cmd_tx, &mut ctx).await {
+        Response::Ok {
+            data: Some(data), ..
+        } => {
+            assert_eq!(data["active_bans"], 0);
+            assert_eq!(data["total_bans"], 0);
+        }
+        other => panic!("expected rolled-back stats, got {other:?}"),
+    }
+
+    cancel.cancel();
+    drop(failure_tx);
+    tracker_handle.await.unwrap();
+    executor_handle.await.unwrap();
 }
 
 #[tokio::test]

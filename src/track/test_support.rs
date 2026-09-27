@@ -63,7 +63,12 @@ pub(crate) fn test_global_config() -> crate::config::GlobalConfig {
 }
 
 /// Send a `ManualBan` command for the `sshd` jail and assert it succeeds.
-pub(crate) async fn manual_ban(cmd_tx: &mpsc::Sender<TrackerCmd>, ip: IpAddr, ban_time: i64) {
+pub(crate) async fn manual_ban(
+    cmd_tx: &mpsc::Sender<TrackerCmd>,
+    executor_rx: &mut mpsc::Receiver<FirewallCmd>,
+    ip: IpAddr,
+    ban_time: i64,
+) {
     let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(TrackerCmd::ManualBan {
@@ -74,6 +79,18 @@ pub(crate) async fn manual_ban(cmd_tx: &mpsc::Sender<TrackerCmd>, ip: IpAddr, ba
         })
         .await
         .unwrap();
+    let cmd = tokio::time::timeout(std::time::Duration::from_secs(30), executor_rx.recv())
+        .await
+        .expect("timeout waiting for manual ban")
+        .expect("executor channel closed");
+    let FirewallCmd::Ban {
+        done: Some(done), ..
+    } = cmd
+    else {
+        panic!("expected acknowledged manual ban, got: {cmd:?}");
+    };
+    done.send(Ok(()))
+        .expect("tracker dropped manual ban result");
     assert!(respond_rx.await.unwrap().is_ok());
 }
 
