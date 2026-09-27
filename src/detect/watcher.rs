@@ -7,6 +7,8 @@
 
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -95,6 +97,36 @@ pub async fn run_from(
     phase: &'static str,
     resume: Option<ResumePoint>,
 ) -> Option<ResumePoint> {
+    run_supervised_from(
+        jail_id,
+        log_path,
+        matcher,
+        date_parser,
+        ignore_list,
+        tx,
+        cancel,
+        phase,
+        resume,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+}
+
+/// Server-managed watcher. Reload switches `handoff` on before cancellation
+/// so queued failures must drain before the replacement starts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_supervised_from(
+    jail_id: String,
+    log_path: PathBuf,
+    matcher: JailMatcher,
+    date_parser: DateParser,
+    ignore_list: IgnoreList,
+    tx: mpsc::Sender<Failure>,
+    cancel: CancellationToken,
+    phase: &'static str,
+    resume: Option<ResumePoint>,
+    handoff: Arc<AtomicBool>,
+) -> Option<ResumePoint> {
     info!(phase, jail = %jail_id, path = %log_path.display(), "watcher started");
 
     let (line_tx, mut line_rx) = mpsc::channel::<Failure>(LINE_CHANNEL_CAPACITY);
@@ -115,7 +147,7 @@ pub async fn run_from(
     });
 
     let stop = forward(&jail_id, &mut line_rx, &tx, &cancel).await;
-    let drained = stop_reader(&jail_id, stop, line_rx, &tx, &reader_cancel).await;
+    let drained = stop_reader(&jail_id, stop, line_rx, &tx, &reader_cancel, &handoff).await;
     let resume = join_reader(&jail_id, reader_handle).await;
     drained_resume(&jail_id, drained, resume)
 }
@@ -188,15 +220,20 @@ async fn stop_reader(
     mut line_rx: mpsc::Receiver<Failure>,
     tx: &mpsc::Sender<Failure>,
     reader_cancel: &CancellationToken,
+    handoff: &AtomicBool,
 ) -> bool {
     let mut complete = true;
     match stop {
         Stop::Cancelled(pending) => {
             debug!(jail = %jail_id, "watcher stopping");
-            let drained = tokio::time::timeout(DRAIN_TIMEOUT, drain(pending, &mut line_rx, tx));
-            if drained.await.is_err() {
-                warn!(jail = %jail_id, "watcher drain timed out, queued failures dropped");
-                complete = false;
+            if handoff.load(Ordering::Acquire) {
+                drain(pending, &mut line_rx, tx).await;
+            } else {
+                let drained = tokio::time::timeout(DRAIN_TIMEOUT, drain(pending, &mut line_rx, tx));
+                if drained.await.is_err() {
+                    warn!(jail = %jail_id, "watcher drain timed out, queued failures dropped");
+                    complete = false;
+                }
             }
         }
         Stop::Done => reader_cancel.cancel(),

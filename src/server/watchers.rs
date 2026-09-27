@@ -7,6 +7,8 @@
 //! no log line is skipped or read twice across a reload.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -70,13 +72,21 @@ pub(super) fn spawn_watchers(
     cancel: &CancellationToken,
     phase: &'static str,
     mut resume: HashMap<String, ResumePoint>,
+    handoff: &Arc<AtomicBool>,
 ) -> Vec<WatcherHandle> {
     watcher_plan
         .into_iter()
         .map(|plan| {
             let start = resume.remove(&plan.name);
             let name = plan.name.clone();
-            let handle = spawn_one(plan, failure_tx.clone(), cancel.child_token(), phase, start);
+            let handle = spawn_one(
+                plan,
+                failure_tx.clone(),
+                cancel.child_token(),
+                phase,
+                start,
+                handoff.clone(),
+            );
             (name, handle)
         })
         .collect()
@@ -89,11 +99,12 @@ fn spawn_one(
     cancel: CancellationToken,
     phase: &'static str,
     start: Option<ResumePoint>,
+    handoff: Arc<AtomicBool>,
 ) -> JoinHandle<Option<ResumePoint>> {
     if plan.jail.log_backend == LogBackend::Systemd {
-        return spawn_journal(plan, tx, cancel, phase, start);
+        return spawn_journal(plan, tx, cancel, phase, start, handoff);
     }
-    tokio::spawn(crate::detect::watcher::run_from(
+    tokio::spawn(crate::detect::watcher::run_supervised_from(
         plan.name,
         plan.jail.log_path,
         plan.matcher,
@@ -103,6 +114,7 @@ fn spawn_one(
         cancel,
         phase,
         start,
+        handoff,
     ))
 }
 
@@ -113,8 +125,9 @@ fn spawn_journal(
     cancel: CancellationToken,
     phase: &'static str,
     start: Option<ResumePoint>,
+    handoff: Arc<AtomicBool>,
 ) -> JoinHandle<Option<ResumePoint>> {
-    tokio::spawn(crate::detect::journal::run_from(
+    tokio::spawn(crate::detect::journal::run_supervised_from(
         plan.name,
         plan.jail.journalmatch,
         plan.matcher,
@@ -124,6 +137,7 @@ fn spawn_journal(
         cancel,
         phase,
         start,
+        handoff,
     ))
 }
 
@@ -133,6 +147,7 @@ fn spawn_journal(
 pub(super) struct Watchers {
     cancel: CancellationToken,
     handles: Vec<WatcherHandle>,
+    handoff: Arc<AtomicBool>,
 }
 
 impl Watchers {
@@ -144,8 +159,27 @@ impl Watchers {
         resume: HashMap<String, ResumePoint>,
     ) -> Self {
         let cancel = CancellationToken::new();
-        let handles = spawn_watchers(plan, failure_tx, &cancel, phase, resume);
-        Self { cancel, handles }
+        let handoff = Arc::new(AtomicBool::new(false));
+        let handles = spawn_watchers(plan, failure_tx, &cancel, phase, resume, &handoff);
+        Self {
+            cancel,
+            handles,
+            handoff,
+        }
+    }
+
+    /// Reload must wait for every watcher to deliver queued failures and
+    /// report its position; timing out would restart it at EOF.
+    pub(super) async fn stop_for_reload(&mut self) -> HashMap<String, ResumePoint> {
+        self.handoff.store(true, Ordering::Release);
+        self.cancel.cancel();
+        let mut points = HashMap::new();
+        for (name, handle) in self.handles.drain(..) {
+            if let Some(point) = resume_point(&name, Ok(handle.await)) {
+                points.insert(name, point);
+            }
+        }
+        points
     }
 
     /// Cancel every watcher and collect the positions they stopped at.

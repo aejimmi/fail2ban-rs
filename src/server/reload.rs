@@ -98,7 +98,7 @@ async fn restart_watchers(
     failure_tx: &mpsc::Sender<Failure>,
     watchers: &mut Watchers,
 ) {
-    let resume = watchers.stop().await;
+    let resume = watchers.stop_for_reload().await;
     *watchers = Watchers::spawn(plan, failure_tx, "reload", resume);
 }
 

@@ -6,6 +6,8 @@
 //! a reload handoff resumes with `--after-cursor` instead of skipping entries.
 
 use std::ffi::OsString;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -48,6 +50,7 @@ pub(crate) struct JournalCtx {
     pub(crate) program: OsString,
     /// Arguments placed before the journalctl flags (empty in production).
     pub(crate) prefix_args: Vec<OsString>,
+    pub(crate) handoff: Arc<AtomicBool>,
 }
 
 /// Run the journal watcher for a single jail, starting at the journal tail.
@@ -97,6 +100,36 @@ pub async fn run_from(
     phase: &'static str,
     resume: Option<ResumePoint>,
 ) -> Option<ResumePoint> {
+    run_supervised_from(
+        jail_id,
+        journalmatch,
+        matcher,
+        date_parser,
+        ignore_list,
+        failure_tx,
+        cancel,
+        phase,
+        resume,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+}
+
+/// Server-managed journal watcher whose reload cancellation drains an entry
+/// before advancing its handoff cursor.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_supervised_from(
+    jail_id: String,
+    journalmatch: Vec<String>,
+    matcher: JailMatcher,
+    date_parser: DateParser,
+    ignore_list: IgnoreList,
+    failure_tx: mpsc::Sender<Failure>,
+    cancel: CancellationToken,
+    phase: &'static str,
+    resume: Option<ResumePoint>,
+    handoff: Arc<AtomicBool>,
+) -> Option<ResumePoint> {
     info!(phase, jail = %jail_id, "journal watcher started");
     let ctx = JournalCtx {
         jail_id,
@@ -107,6 +140,7 @@ pub async fn run_from(
         failure_tx,
         program: OsString::from(JOURNALCTL),
         prefix_args: Vec::new(),
+        handoff,
     };
     let cursor = resume.and_then(ResumePoint::into_journal_cursor);
     let cursor = supervise(&ctx, cursor, &cancel).await;
@@ -351,13 +385,19 @@ async fn process_line(
     };
     tokio::select! {
         biased;
-        r = ctx.failure_tx.send(failure) => {
+        r = ctx.failure_tx.reserve() => {
             if r.is_err() {
                 warn!(jail = %ctx.jail_id, "failure channel closed");
             }
-            r.is_ok()
+            if let Ok(permit) = r { permit.send(failure); true } else { false }
         }
-        () = cancel.cancelled() => false,
+        () = cancel.cancelled() => {
+            if ctx.handoff.load(Ordering::Acquire) {
+                ctx.failure_tx.send(failure).await.is_ok()
+            } else {
+                false
+            }
+        },
     }
 }
 

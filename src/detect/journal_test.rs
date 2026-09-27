@@ -216,6 +216,7 @@ fn fake_journalctl(
 /// Build a journal context that runs `/bin/sh <script>` instead of journalctl.
 fn fake_ctx(script: &std::path::Path, tx: mpsc::Sender<Failure>) -> JournalCtx {
     JournalCtx {
+        handoff: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         jail_id: "test".to_string(),
         journalmatch: vec!["_SYSTEMD_UNIT=sshd.service".to_string()],
         matcher: JailMatcher::new(&[r"Failed password for .* from <HOST>".to_string()]).unwrap(),

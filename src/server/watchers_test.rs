@@ -125,6 +125,7 @@ async fn test_watchers_stop_omits_position_when_watcher_panics() {
     let mut watchers = Watchers {
         cancel,
         handles: vec![("crashed".to_string(), handle)],
+        handoff: Arc::new(AtomicBool::new(false)),
     };
     let points = watchers.stop().await;
     assert!(
@@ -143,6 +144,7 @@ async fn test_watchers_stop_omits_position_when_watcher_returns_none() {
     let mut watchers = Watchers {
         cancel,
         handles: vec![("no-position".to_string(), handle)],
+        handoff: Arc::new(AtomicBool::new(false)),
     };
     let points = watchers.stop().await;
     assert!(points.is_empty());
@@ -255,4 +257,36 @@ async fn test_reload_config_parse_error_keeps_watchers_running() {
     append_failure(&log, 5);
     assert_eq!(recv_ip(&mut rx).await, "10.9.8.5");
     assert!(watchers.stop().await.contains_key("sshd"));
+}
+
+/// Reload waits for a full downstream channel to drain, then resumes after
+/// the exact last delivered failure instead of tailing past queued entries.
+#[tokio::test]
+async fn test_reload_handoff_waits_for_backpressure_without_skipping() {
+    let dir = TempDir::new().unwrap();
+    let log = dir.path().join("auth.log");
+    let config = Config::parse(&file_jail_toml(&log)).unwrap();
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut watchers = spawn_live(&config, &log, &tx, &mut rx).await;
+    append_failure(&log, 2);
+    append_failure(&log, 3);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let mut stop = tokio::spawn(async move { watchers.stop_for_reload().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut stop)
+            .await
+            .is_err()
+    );
+    let first = recv_ip(&mut rx).await;
+    let second = recv_ip(&mut rx).await;
+    let resume = tokio::time::timeout(RECV_TIMEOUT, stop)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut replacement =
+        Watchers::spawn(build_watcher_plan(&config).unwrap(), &tx, "reload", resume);
+    append_failure(&log, 4);
+    let third = recv_ip(&mut rx).await;
+    assert_eq!([first, second, third], ["10.9.8.2", "10.9.8.3", "10.9.8.4"]);
+    replacement.stop().await;
 }
