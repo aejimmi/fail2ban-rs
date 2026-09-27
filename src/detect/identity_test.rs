@@ -136,10 +136,12 @@ fn test_can_resume_different_inode_is_false_even_if_hash_matches() {
     let dir = TempDir::new().unwrap();
     let path = write(&dir, "a.log", b"same\n");
     let old = FileIdentity::from_file(&path).unwrap();
-    // Replace the file with identical content but a new inode.
-    std::fs::remove_file(&path).unwrap();
+    // Keep the old inode allocated while creating its replacement. Deleting
+    // the file first allows the filesystem to reuse its inode immediately.
+    std::fs::rename(&path, dir.path().join("rotated.log")).unwrap();
     let current_path = write(&dir, "a.log", b"same\n");
     let current = FileIdentity::from_file(&current_path).unwrap();
+    assert_ne!(old.inode, current.inode);
     assert!(
         !old.can_resume(&current, 0),
         "identical content on a new inode must not be resumable"
