@@ -1,4 +1,4 @@
-A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **single binary · async pipeline · embedded persistence**
+A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **5x faster matching · ~7x faster startup (historical benchmarks) · single binary · async pipeline · embedded persistence**
 
 Used in production at [tell.rs](https://tell.rs) to protect application endpoints.
 

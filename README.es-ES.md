@@ -1,6 +1,6 @@
 
 
-Una reescritura completa en Rust de [fail2ban](https://github.com/fail2ban/fail2ban) — **binario único · pipeline asíncrono · persistencia integrada**
+Una reescritura completa en Rust de [fail2ban](https://github.com/fail2ban/fail2ban) — **coincidencias 5x más rápidas · inicio ~7x más rápido (benchmarks históricos) · binario único · pipeline asíncrono · persistencia integrada**
 
 Usado en producción en [tell.rs](https://tell.rs) para proteger los puntos finales de la aplicación.
 
