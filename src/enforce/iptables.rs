@@ -13,6 +13,7 @@ use tracing::{debug, warn};
 
 use crate::enforce::{FirewallBackend, cmd};
 use crate::error::{Error, Result};
+use crate::text::lossy;
 
 /// Port/protocol inputs a jail was initialized with.
 ///
@@ -183,7 +184,7 @@ impl IptablesBackend {
                 stderr.trim()
             )));
         }
-        Ok(parse_listing(&String::from_utf8_lossy(&output.stdout)))
+        Ok(parse_listing(&lossy(&output.stdout)))
     }
 }
 
