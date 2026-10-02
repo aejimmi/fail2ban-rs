@@ -8,7 +8,7 @@ fail2ban es una base de código en Python de 20 años que funciona, pero requier
 
 fail2ban-rs elimina todo eso:
 
-- **Binario único de ~5 MB** — el binario Linux amd64 publicado de v1.5.3 ocupa 4.996.120 bytes; el tamaño varía según la plataforma y las opciones de compilación
+- **Binario único de ~5 MB** — sin Python, sin runtime, sin sobrecarga de arranque del intérprete
 - **~9 MB de RSS en reposo en una prueba local** — 8,7 MiB con una cárcel de archivo y los hilos predeterminados del runtime; el RSS depende de la configuración, las IP registradas y los bloqueos activos
 - **Estado del tracker con propietario único** — canales acotados conectan detección, seguimiento y aplicación; la persistencia y algunos backends siguen usando bloqueos, y los comandos de firewall pasan por un único ejecutor ordenado
 - **Coincidencias rápidas por línea** — prefiltro Aho-Corasick y selección de expresiones regulares guiada por AC; consulta los benchmarks acotados más abajo
