@@ -9,7 +9,7 @@ fail2ban es una base de código en Python de 20 años que funciona, pero requier
 fail2ban-rs elimina todo eso:
 
 - **Binario único de ~5 MB** — el binario Linux amd64 publicado de v1.5.3 ocupa 4.996.120 bytes; el tamaño varía según la plataforma y las opciones de compilación
-- **~9 MB de RSS en reposo en una prueba local** — 8,7 MiB con una cárcel de archivo y los hilos predeterminados del runtime; el RSS depende de la configuración, las IP registradas y los bloqueos activos (consulta las mediciones más abajo)
+- **~9 MB de RSS en reposo en una prueba local** — 8,7 MiB con una cárcel de archivo y los hilos predeterminados del runtime; el RSS depende de la configuración, las IP registradas y los bloqueos activos
 - **Estado del tracker con propietario único** — canales acotados conectan detección, seguimiento y aplicación; la persistencia y algunos backends siguen usando bloqueos, y los comandos de firewall pasan por un único ejecutor ordenado
 - **Coincidencias rápidas por línea** — prefiltro Aho-Corasick y selección de expresiones regulares guiada por AC; consulta los benchmarks acotados más abajo
 - **Ejecución directa de comandos de firewall nativos** — nftables/iptables/ipset usan argv; el backend de script usa `sh -c` con sustituciones validadas de IP y cárcel
@@ -185,29 +185,18 @@ fail2ban-rs dry-run /var/log/auth.log --jail sshd
 
 ## Rendimiento
 
-Microbenchmarks históricos de coincidencias (MacBook M4 Pro, Criterion para Rust y `timeit` para Python). El script de Python recorre patrones compilados con `re`; no ejecuta el motor de filtros de fail2ban. La mezcla sintética de diez líneas está basada en [openssh_2k.log](sample/openssh_2k.log) de [logpai/loghub](https://github.com/logpai/loghub) (~30% aciertos, ~70% fallos cercanos):
+Microbenchmarks históricos de coincidencias (MacBook M4 Pro, Criterion para Rust y `timeit` para `re` de Python, no el motor de filtros de fail2ban). Mezcla sintética de diez líneas basada en [openssh_2k.log](sample/openssh_2k.log) de [logpai/loghub](https://github.com/logpai/loghub) (~30% aciertos, ~70% fallos cercanos):
 
 | Etapa | Rust | Python | Aceleración |
 |---|---|---|---|
 | Fecha + coincidencias (mezcla sintética) | ~147 ns/línea | ~740 ns/línea | **5x** |
 | Coincidencia de patrón — acierto | 291-353 ns | 457-730 ns | 1.6-2.1x |
 | Coincidencia de patrón — fallo (rechazo AC) | 20-56 ns | 342-574 ns | 6-29x |
+| Análisis de fecha (ISO 8601) | 7.6 ns | 165 ns | No comparable |
 
-Estas mediciones excluyen la lectura de registros, el seguimiento, la persistencia y la ejecución del firewall. Dependen de la carga y del equipo; no representan una aceleración universal frente a fail2ban. Los benchmarks de fechas realizan trabajos diferentes: Rust produce una marca de tiempo y Python devuelve una coincidencia de regex, por lo que sus tiempos no son directamente comparables.
+Los tiempos dependen de la carga y del equipo y excluyen la lectura del demonio, el seguimiento, la persistencia y la ejecución del firewall. El benchmark de fechas de Python solo busca una regex; Rust convierte a una marca de tiempo, por lo que esos tiempos no son comparables.
 
-Una comprobación local en Linux de la revisión `7dc7def` (AMD Threadripper 7960X, Rust 1.94.0, Python 3.12.3, afinidad con CPU 2) midió aproximadamente **250 ns/línea en Rust frente a 741 ns/línea en Python**, unas **3x**, con la misma mezcla sintética. Rust usó 30 muestras, 1 segundo de calentamiento y 2 segundos de medición; esta ejecución breve es ilustrativa.
-
-Mediciones locales de RSS en ese equipo Linux, con una cárcel de archivo y un backend de script sin efecto:
-
-| Carga | RSS del demonio | Configuración |
-|---|---|---|
-| En reposo | 8,7 MiB | Hilos predeterminados del runtime (51 hilos del proceso) |
-| 10.000 bloqueos activos | 17,5 MiB | Un hilo de trabajo del runtime, `max_retry = 1` |
-| 500.000 IP distintas por debajo del umbral de bloqueo | 136 MiB | Hilos predeterminados, `max_retry = 5`, `find_time = "10m"` |
-
-El RSS se leyó de `/proc/<pid>/status` después de que el demonio contara las líneas coincidentes generadas. Son observaciones locales, no mediciones en producción; esta prueba sin efecto excluye la memoria del firewall nativo y el coste real de los comandos.
-
-Ejecuta los microbenchmarks de coincidencias tú mismo:
+Ejecuta los benchmarks tú mismo:
 ```bash
 cargo bench --bench matching                 # Rust (criterion)
 python3 benches/bench_matching_fail2ban.py   # Python (timeit)

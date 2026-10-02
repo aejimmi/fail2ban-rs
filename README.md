@@ -7,7 +7,7 @@ fail2ban is a 20-year-old Python codebase that works, but requires a Python runt
 fail2ban-rs eliminates all of that:
 
 - **Single ~5 MB binary** — the published v1.5.3 Linux amd64 binary is 4,996,120 bytes; size varies by target and build options
-- **~9 MB idle RSS in a local test** — 8.7 MiB with one file jail and default runtime threads; RSS depends on configuration, tracked IPs, and active bans (see measurements below)
+- **~9 MB idle RSS in a local test** — 8.7 MiB with one file jail and default runtime threads; RSS depends on configuration, tracked IPs, and active bans
 - **Single-owner tracker** — bounded channels connect detection, tracking, and enforcement; persistence and some backends still use locks, and firewall commands run through one ordered executor
 - **Fast per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection; see the scoped benchmarks below
 - **Direct native firewall execution** — nftables/iptables/ipset commands use argv; the script backend uses `sh -c` with validated IP and jail substitutions
@@ -183,29 +183,18 @@ fail2ban-rs dry-run /var/log/auth.log --jail sshd
 
 ## Performance
 
-Historical matching microbenchmarks (MacBook M4 Pro, Criterion for Rust, `timeit` for Python). The Python script loops over compiled `re` patterns; it does not run fail2ban's filter engine. The synthetic ten-line mix is based on [openssh_2k.log](sample/openssh_2k.log) from [logpai/loghub](https://github.com/logpai/loghub) (~30% hits, ~70% near-misses):
+Historical matching microbenchmarks (MacBook M4 Pro, Criterion for Rust, `timeit` for Python `re`, not fail2ban's filter engine). Synthetic ten-line mix based on [openssh_2k.log](sample/openssh_2k.log) from [logpai/loghub](https://github.com/logpai/loghub) (~30% hits, ~70% near-misses):
 
 | Stage | Rust | Python | Speedup |
 |---|---|---|---|
 | Date + matching (synthetic mix) | ~147 ns/line | ~740 ns/line | **5x** |
 | Pattern match — hit | 291-353 ns | 457-730 ns | 1.6-2.1x |
 | Pattern match — miss (AC rejects) | 20-56 ns | 342-574 ns | 6-29x |
+| Date parse (ISO 8601) | 7.6 ns | 165 ns | Not comparable |
 
-These timings exclude log ingestion, tracking, persistence, and firewall execution. They are workload- and machine-dependent, not a universal fail2ban speedup. The date-parsing benchmarks perform different work: Rust produces a timestamp, while Python returns a regex match, so their timings are not a like-for-like comparison.
+Timings depend on the workload and machine and exclude daemon ingestion, tracking, persistence, and firewall execution. Python's date benchmark only searches a regex; Rust converts to a timestamp, so the date timings are not comparable.
 
-A Linux spot-check at revision `7dc7def` (AMD Threadripper 7960X, Rust 1.94.0, Python 3.12.3, CPU 2 affinity) measured approximately **250 ns/line Rust vs 741 ns/line Python**, about **3x**, for the same synthetic mix. Rust used 30 samples, 1 second warmup, and 2 seconds measurement; this short run is illustrative.
-
-Local RSS measurements on that Linux host, using one file jail and a no-op script backend:
-
-| Workload | Daemon RSS | Configuration |
-|---|---|---|
-| Idle | 8.7 MiB | Default runtime thread count (51 process threads) |
-| 10,000 active bans | 17.5 MiB | One runtime worker, `max_retry = 1` |
-| 500,000 distinct IPs below the ban threshold | 136 MiB | Default runtime threads, `max_retry = 5`, `find_time = "10m"` |
-
-RSS was read from `/proc/<pid>/status` after the daemon counted the generated matching lines. These are local workload observations, not production measurements; native firewall memory and real command costs are outside this no-op test.
-
-Run the matching microbenchmarks yourself:
+Run benchmarks yourself:
 ```bash
 cargo bench --bench matching                 # Rust (criterion)
 python3 benches/bench_matching_fail2ban.py   # Python (timeit)
