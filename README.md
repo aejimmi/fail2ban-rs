@@ -2,16 +2,18 @@ A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) —
 
 Used in production at [tell.rs](https://tell.rs) to protect application endpoints.
 
-fail2ban-rs runs without a Python interpreter and uses a three-layer async pipeline:
+fail2ban is a 20-year-old Python codebase that works, but requires a Python runtime on every production server, serializes all firewall operations behind a global thread lock, and executes shell commands via `subprocess.Popen(shell=True)`.
+
+fail2ban-rs eliminates all of that:
 
 - **Single ~5 MB binary** — the published v1.5.3 Linux amd64 binary is 4,996,120 bytes; size varies by target and build options
-- **Small idle memory footprint** — RSS depends on configuration, runtime threads, tracked IPs, and active bans; it is not constant under all workloads
+- **~9 MB idle RSS in a local test** — 8.7 MiB with one file jail and default runtime threads; RSS depends on configuration, tracked IPs, and active bans (see measurements below)
 - **Single-owner tracker** — bounded channels connect detection, tracking, and enforcement; persistence and some backends still use locks, and firewall commands run through one ordered executor
 - **Fast per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection; see the scoped benchmarks below
 - **Direct native firewall execution** — nftables/iptables/ipset commands use argv; the script backend uses `sh -c` with validated IP and jail substitutions
 - **Fast startup** — startup time depends on the command, configuration, persisted state, and firewall backend; CLI launch and daemon readiness are different measurements
 - **Embedded EtchDB state** — WAL and compacted snapshots store active bans, escalation counters, and metadata without SQLite; disk usage grows with retained state
-- **Compact failure tracking** — per-IP timestamp buffers are sized by `max_retry`, rather than storing matched log lines; total memory still grows with tracked IPs
+- **40 bytes of timestamp data per tracked IP/jail by default** — five 8-byte timestamps, rather than matched log lines; the payload scales as `8 × max_retry` bytes and excludes buffer structures, map keys, allocator overhead, active bans, and persistence (total RSS is higher)
 
 Everything else you'd expect: nftables/iptables/ipset/script backends, ban time escalation, config overlays, hot reload via SIGHUP, 88 built-in filters, systemd journal support.
 

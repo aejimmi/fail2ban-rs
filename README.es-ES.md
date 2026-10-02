@@ -4,16 +4,18 @@ Una reescritura completa en Rust de [fail2ban](https://github.com/fail2ban/fail2
 
 Usado en producción en [tell.rs](https://tell.rs) para proteger los puntos finales de la aplicación.
 
-fail2ban-rs funciona sin un intérprete de Python y usa un pipeline asíncrono de tres capas:
+fail2ban es una base de código en Python de 20 años que funciona, pero requiere un runtime de Python en cada servidor de producción, serializa todas las operaciones del firewall detrás de un bloqueo global de hilos y ejecuta comandos de shell a través de `subprocess.Popen(shell=True)`.
+
+fail2ban-rs elimina todo eso:
 
 - **Binario único de ~5 MB** — el binario Linux amd64 publicado de v1.5.3 ocupa 4.996.120 bytes; el tamaño varía según la plataforma y las opciones de compilación
-- **Poco consumo de memoria en reposo** — el RSS depende de la configuración, los hilos del runtime, las IP registradas y los bloqueos activos; no es constante bajo todas las cargas
+- **~9 MB de RSS en reposo en una prueba local** — 8,7 MiB con una cárcel de archivo y los hilos predeterminados del runtime; el RSS depende de la configuración, las IP registradas y los bloqueos activos (consulta las mediciones más abajo)
 - **Estado del tracker con propietario único** — canales acotados conectan detección, seguimiento y aplicación; la persistencia y algunos backends siguen usando bloqueos, y los comandos de firewall pasan por un único ejecutor ordenado
 - **Coincidencias rápidas por línea** — prefiltro Aho-Corasick y selección de expresiones regulares guiada por AC; consulta los benchmarks acotados más abajo
 - **Ejecución directa de comandos de firewall nativos** — nftables/iptables/ipset usan argv; el backend de script usa `sh -c` con sustituciones validadas de IP y cárcel
 - **Inicio rápido** — el tiempo depende del comando, la configuración, el estado persistido y el backend; el lanzamiento de la CLI y la disponibilidad del demonio son mediciones diferentes
 - **Estado integrado con EtchDB** — el WAL y las instantáneas compactadas almacenan bloqueos activos, contadores de escalación y metadatos sin SQLite; el espacio en disco crece con el estado retenido
-- **Seguimiento compacto de fallos** — los búferes de marcas de tiempo por IP se dimensionan según `max_retry`, en lugar de almacenar líneas de registro; la memoria total sigue creciendo con las IP registradas
+- **40 bytes de marcas de tiempo por IP/cárcel registrada por defecto** — cinco marcas de 8 bytes, en lugar de líneas de registro; estos datos ocupan `8 × max_retry` bytes y excluyen las estructuras de los búferes, claves de los mapas, sobrecarga del asignador, bloqueos activos y persistencia (el RSS total es mayor)
 
 Todo lo demás que esperarías: backends nftables/iptables/ipset/script, escalación del tiempo de bloqueo, superposición de configuración, recarga en caliente vía SIGHUP, 88 filtros integrados, soporte para systemd journal.
 
