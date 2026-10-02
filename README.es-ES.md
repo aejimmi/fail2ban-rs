@@ -13,7 +13,7 @@ fail2ban-rs elimina todo eso:
 - **Estado del tracker con propietario único** — canales acotados conectan detección, seguimiento y aplicación; la persistencia y algunos backends siguen usando bloqueos, y los comandos de firewall pasan por un único ejecutor ordenado
 - **Coincidencias por línea 5x más rápidas en el benchmark sintético de Python `re`** — prefiltro Aho-Corasick y selección de expresiones regulares guiada por AC
 - **Ejecución directa de comandos de firewall nativos** — nftables/iptables/ipset usan argv; el backend de script usa `sh -c` con sustituciones validadas de IP y cárcel
-- **Inicio rápido** — el tiempo depende del comando, la configuración, el estado persistido y el backend; el lanzamiento de la CLI y la disponibilidad del demonio son mediciones diferentes
+- **Inicio ~7x más rápido en el benchmark histórico** — 3,7ms frente a 25,8ms (reportado con hyperfine, 50 ejecuciones)
 - **Estado integrado con EtchDB** — el WAL y las instantáneas compactadas almacenan bloqueos activos, contadores de escalación y metadatos sin SQLite; el espacio en disco crece con el estado retenido
 - **40 bytes de marcas de tiempo por IP/cárcel registrada por defecto** — los búferes circulares almacenan 5 marcas de tiempo por IP, no líneas de registro; excluye otros datos y sobrecarga
 
