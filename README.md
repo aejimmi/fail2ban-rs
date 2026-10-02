@@ -7,7 +7,7 @@ fail2ban is a 20-year-old Python codebase that works, but requires a Python runt
 fail2ban-rs eliminates all of that:
 
 - **Single ~5 MB binary** — no Python, no runtime, no interpreter startup overhead
-- **~9 MB idle RSS in a local test** — 8.7 MiB with one file jail and default runtime threads; RSS depends on configuration, tracked IPs, and active bans
+- **~9 MB idle RSS** — RSS depends on configuration, tracked IPs, and active bans
 - **Single-owner tracker** — bounded channels connect detection, tracking, and enforcement; persistence and some backends still use locks, and firewall commands run through one ordered executor
 - **Fast per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection; see the scoped benchmarks below
 - **Direct native firewall execution** — nftables/iptables/ipset commands use argv; the script backend uses `sh -c` with validated IP and jail substitutions
