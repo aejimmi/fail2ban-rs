@@ -16,6 +16,7 @@ use fail2ban_rs::config::{Config, JailConfig};
 use fail2ban_rs::detect::date::DateParser;
 use fail2ban_rs::detect::ignore::IgnoreList;
 use fail2ban_rs::detect::matcher::JailMatcher;
+use fail2ban_rs::text::lossy;
 use fail2ban_rs::track::circular::CircularTimestamps;
 
 /// Bounded per-IP failure state for one jail.
@@ -143,7 +144,7 @@ pub(crate) fn scan<R: BufRead>(mut reader: R, scans: &mut [JailScan<'_>]) -> Res
             buf.pop();
         }
         lines += 1;
-        let line = String::from_utf8_lossy(&buf);
+        let line = lossy(&buf);
         for s in scans.iter_mut() {
             s.scan_line(&line);
         }

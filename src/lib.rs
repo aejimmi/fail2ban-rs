@@ -12,6 +12,7 @@ pub mod log_format;
 pub mod logging;
 pub mod regex_tool;
 pub mod server;
+pub mod text;
 pub mod track;
 pub mod webhook;
 

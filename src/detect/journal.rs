@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use memchr::memchr;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -23,6 +24,7 @@ use crate::detect::journal_proc::{StderrCapture, cursor_rejected, reap};
 use crate::detect::matcher::JailMatcher;
 use crate::detect::resume::ResumePoint;
 use crate::detect::watcher::Failure;
+use crate::text::lossy;
 
 /// Program used to stream the journal.
 const JOURNALCTL: &str = "journalctl";
@@ -421,7 +423,7 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin>(
             decode_line(raw, line); // flush a trailing partial line at EOF
             return Ok(total); // 0 if nothing was buffered
         }
-        if let Some(pos) = memchr_newline(available) {
+        if let Some(pos) = memchr(b'\n', available) {
             let to_take = finish_line(available, pos, total, raw, line, jail_id);
             reader.consume(to_take);
             return Ok(total + to_take);
@@ -490,7 +492,7 @@ async fn drain_until_newline<R: AsyncBufRead + Unpin>(reader: &mut R) -> std::io
         if available.is_empty() {
             break; // EOF
         }
-        if let Some(pos) = memchr_newline(available) {
+        if let Some(pos) = memchr(b'\n', available) {
             reader.consume(pos + 1);
             break;
         }
@@ -500,18 +502,13 @@ async fn drain_until_newline<R: AsyncBufRead + Unpin>(reader: &mut R) -> std::io
     Ok(())
 }
 
-/// Find the position of the first newline byte in a slice.
-fn memchr_newline(buf: &[u8]) -> Option<usize> {
-    buf.iter().position(|&b| b == b'\n')
-}
-
 /// Decode `raw` into `line` (invalid UTF-8 replaced) and clear it. Per-line
 /// decoding keeps UTF-8 sequences split across chunks intact.
 fn decode_line(raw: &mut Vec<u8>, line: &mut String) {
     if raw.is_empty() {
         return;
     }
-    line.push_str(&String::from_utf8_lossy(raw));
+    line.push_str(&lossy(raw));
     raw.clear();
 }
 

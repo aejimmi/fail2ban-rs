@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use serde_json::{Map, Value};
 
 use crate::detect::watcher::MAX_LINE_LEN;
+use crate::text::lossy;
 
 /// One decoded journal entry.
 #[derive(Debug)]
@@ -104,7 +105,7 @@ fn value_text(value: &Value) -> Option<Cow<'_, str>> {
                 .filter_map(Value::as_u64)
                 .map(|b| b as u8)
                 .collect();
-            Some(Cow::Owned(String::from_utf8_lossy(&bytes).into_owned()))
+            Some(Cow::Owned(lossy(&bytes).into_owned()))
         }
         Value::Array(items) => items.first().and_then(value_text),
         _ => None,
