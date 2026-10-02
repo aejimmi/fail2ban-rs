@@ -1,19 +1,17 @@
-A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **5x faster matching · 6.6x faster startup · single binary · zero database · zero locks**
+A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **single binary · async pipeline · embedded persistence**
 
 Used in production at [tell.rs](https://tell.rs) to protect application endpoints.
 
-fail2ban is a 20-year-old Python codebase that works, but requires a Python runtime on every production server, serializes all firewall operations behind a global thread lock, and executes shell commands via `subprocess.Popen(shell=True)`.
+fail2ban-rs runs without a Python interpreter and uses a three-layer async pipeline:
 
-fail2ban-rs eliminates all of that:
-
-- **Single ~3 MB binary** — no Python, no runtime, no interpreter startup overhead
-- **~6 MB RSS in production** — constant memory regardless of log volume
-- **Zero locks** — three-layer async pipeline connected by channels, single-owner state (Python fail2ban uses 9+ thread locks)
-- **5x faster per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection
-- **No shell execution** — nftables/iptables backends exec directly via argv, no `shell=True` (script backend uses `sh -c` but substitutes only validated `IpAddr` values)
-- **6.6x faster startup** — 3.7ms vs 25.8ms (measured with hyperfine, 50 runs)
-- **Constant-size state** — flat binary snapshot of active bans only. No SQLite database growing on disk for years
-- **~1 MB at 10K active bans** — ring buffers store 5 timestamps per IP, not matched log lines
+- **Single ~5 MB binary** — the published v1.5.3 Linux amd64 binary is 4,996,120 bytes; size varies by target and build options
+- **Small idle memory footprint** — RSS depends on configuration, runtime threads, tracked IPs, and active bans; it is not constant under all workloads
+- **Single-owner tracker** — bounded channels connect detection, tracking, and enforcement; persistence and some backends still use locks, and firewall commands run through one ordered executor
+- **Fast per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection; see the scoped benchmarks below
+- **Direct native firewall execution** — nftables/iptables/ipset commands use argv; the script backend uses `sh -c` with validated IP and jail substitutions
+- **Fast startup** — startup time depends on the command, configuration, persisted state, and firewall backend; CLI launch and daemon readiness are different measurements
+- **Embedded EtchDB state** — WAL and compacted snapshots store active bans, escalation counters, and metadata without SQLite; disk usage grows with retained state
+- **Compact failure tracking** — per-IP timestamp buffers are sized by `max_retry`, rather than storing matched log lines; total memory still grows with tracked IPs
 
 Everything else you'd expect: nftables/iptables/ipset/script backends, ban time escalation, config overlays, hot reload via SIGHUP, 88 built-in filters, systemd journal support.
 
@@ -121,7 +119,7 @@ Needs the `ipset` tool and the `ip_set`, `ip_set_hash_ip`, and `xt_set` kernel m
 
 Two limits worth knowing: a jail on this backend needs a name of at most 26 characters, since `f2b-<jail>6` must fit ipset's 31-character cap, and `maxelem` bounds the ban list. A full set rejects further bans — they fail loudly and the IP is retried rather than recorded as banned — so raise `maxelem` for busy jails, at the cost of kernel memory.
 
-**Every backend** gets the same guarantees. A ban is written to the WAL before it reaches the firewall, and an unban keeps its record until the firewall confirms removal — a failed unban retries after 60 seconds instead of leaving the address blocked. Every firewall command is killed after 30 seconds, including background processes a ban script leaves behind. iptables waits for the xtables lock rather than failing when another tool holds it. And every 5 minutes the daemon checks active bans against the firewall and re-applies any that went missing, one listing per jail.
+**Firewall persistence and retries.** A ban is written to the WAL before it reaches the firewall, and an unban keeps its record until the firewall confirms removal — a failed unban retries after 60 seconds instead of leaving the address blocked. Every firewall command is killed after 30 seconds, including background processes a ban script leaves behind. iptables waits for the xtables lock rather than failing when another tool holds it. Every 5 minutes the daemon schedules a reconciliation batch of up to 1,000 active bans. Native backends list each jail's firewall state and re-apply missing bans; a complete pass over larger ban lists takes multiple batches. The script backend cannot verify external firewall state and skips this check.
 
 ### Webhooks
 
@@ -156,8 +154,8 @@ Run `fail2ban-rs list-filters` for the full list.
 fail2ban-rs status                              # show all jails and bans
 fail2ban-rs list-bans                           # sorted table of active bans (--json for JSONL)
 fail2ban-rs stats                               # daemon statistics
-fail2ban-rs ban 1.2.3.4 sshd                    # manually ban an IP
-fail2ban-rs unban 1.2.3.4 sshd                  # manually unban
+fail2ban-rs ban 1.2.3.4 --jail sshd              # manually ban an IP
+fail2ban-rs unban 1.2.3.4 --jail sshd            # manually unban
 fail2ban-rs dry-run /var/log/auth.log -j sshd   # analyze a log without banning
 fail2ban-rs regex --pattern '...' --line '...'  # test a pattern
 fail2ban-rs gen-config sshd                     # generate jail config
@@ -183,16 +181,29 @@ fail2ban-rs dry-run /var/log/auth.log --jail sshd
 
 ## Performance
 
-Per-line matching pipeline benchmarks (MacBook M4 Pro, criterion), comparing against Python fail2ban's equivalent regex engine. Line mix based on [openssh_2k.log](sample/openssh_2k.log) from [logpai/loghub](https://github.com/logpai/loghub) (~30% hits, ~70% near-misses):
+Historical matching microbenchmarks (MacBook M4 Pro, Criterion for Rust, `timeit` for Python). The Python script loops over compiled `re` patterns; it does not run fail2ban's filter engine. The synthetic ten-line mix is based on [openssh_2k.log](sample/openssh_2k.log) from [logpai/loghub](https://github.com/logpai/loghub) (~30% hits, ~70% near-misses):
 
 | Stage | Rust | Python | Speedup |
 |---|---|---|---|
-| Full pipeline (openssh_2k mix) | ~147 ns/line | ~740 ns/line | **5x** |
+| Date + matching (synthetic mix) | ~147 ns/line | ~740 ns/line | **5x** |
 | Pattern match — hit | 291-353 ns | 457-730 ns | 1.6-2.1x |
 | Pattern match — miss (AC rejects) | 20-56 ns | 342-574 ns | 6-29x |
-| Date parse (ISO 8601) | 7.6 ns | 165 ns | 22x |
 
-Run benchmarks yourself:
+These timings exclude log ingestion, tracking, persistence, and firewall execution. They are workload- and machine-dependent, not a universal fail2ban speedup. The date-parsing benchmarks perform different work: Rust produces a timestamp, while Python returns a regex match, so their timings are not a like-for-like comparison.
+
+A Linux spot-check at revision `7dc7def` (AMD Threadripper 7960X, Rust 1.94.0, Python 3.12.3, CPU 2 affinity) measured approximately **250 ns/line Rust vs 741 ns/line Python**, about **3x**, for the same synthetic mix. Rust used 30 samples, 1 second warmup, and 2 seconds measurement; this short run is illustrative.
+
+Local RSS measurements on that Linux host, using one file jail and a no-op script backend:
+
+| Workload | Daemon RSS | Configuration |
+|---|---|---|
+| Idle | 8.7 MiB | Default runtime thread count (51 process threads) |
+| 10,000 active bans | 17.5 MiB | One runtime worker, `max_retry = 1` |
+| 500,000 distinct IPs below the ban threshold | 136 MiB | Default runtime threads, `max_retry = 5`, `find_time = "10m"` |
+
+RSS was read from `/proc/<pid>/status` after the daemon counted the generated matching lines. These are local workload observations, not production measurements; native firewall memory and real command costs are outside this no-op test.
+
+Run the matching microbenchmarks yourself:
 ```bash
 cargo bench --bench matching                 # Rust (criterion)
 python3 benches/bench_matching_fail2ban.py   # Python (timeit)
@@ -237,7 +248,7 @@ to `jail.d/*.local` overrides.
 | `banaction = iptables-ipset-proto6[...]` | `backend = "ipset"` | Native — sets and match rules are auto-created, no `[Init]` section needed. Leave `reban_on_restart` at its `true` default. |
 | persistent external ban list | `reban_on_restart = false` | Only for `script` backends whose external store keeps bans on its own; the native ipset backend rebans from state instead. |
 | `fail2ban-client status` | `fail2ban-rs status` | |
-| `fail2ban-client set sshd banip 1.2.3.4` | `fail2ban-rs ban 1.2.3.4 sshd` | |
+| `fail2ban-client set sshd banip 1.2.3.4` | `fail2ban-rs ban 1.2.3.4 --jail sshd` | |
 
 The following fail2ban features have no direct configuration equivalent yet:
 custom filter tags and interpolation (`%(...)s`), `prefregex`, `maxlines`,
