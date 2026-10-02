@@ -192,3 +192,134 @@ fn ac_fallback_tries_non_ac_patterns() {
     assert_eq!(result.ip, "1.2.3.4".parse::<IpAddr>().unwrap());
     assert_eq!(result.pattern_idx, 1);
 }
+
+/// Compare the optimised path with the named capture contract, including
+/// first-pattern precedence and IP validation/normalisation.
+fn assert_reference(patterns: &[&str], lines: &[&str]) {
+    let patterns: Vec<String> = patterns.iter().map(|p| (*p).to_owned()).collect();
+    let matcher = JailMatcher::new(&patterns).unwrap();
+    let reference: Vec<Regex> = patterns
+        .iter()
+        .map(|p| Regex::new(&pattern::expand_host(p).unwrap()).unwrap())
+        .collect();
+    for line in lines {
+        let expected = reference.iter().enumerate().find_map(|(idx, regex)| {
+            let caps = regex.captures(line)?;
+            let ip = normalize_mapped(caps.name("host")?.as_str().parse::<IpAddr>().ok()?);
+            Some((idx, ip))
+        });
+        let actual = matcher.try_match(line).map(|m| (m.pattern_idx, m.ip));
+        assert_eq!(actual, expected, "patterns={patterns:?}, line={line:?}");
+    }
+}
+
+#[test]
+fn hir_prefilter_and_extraction_match_reference() {
+    for (pattern, lines) in [
+        (
+            r"(?:foo|bar) <HOST>",
+            vec!["foo 192.0.2.1", "bar 192.0.2.1"],
+        ),
+        (
+            r"(?:optional)? <HOST>",
+            vec![" 192.0.2.1", "optional 192.0.2.1"],
+        ),
+        (
+            r"(?i)login failed for .* from <HOST>",
+            vec![
+                "Login failed for joe FROM 192.0.2.1",
+                "LOGIN FAILED FOR joe from ::ffff:192.0.2.1",
+            ],
+        ),
+        (
+            r"(?i:HELLO) exact <HOST>",
+            vec!["hello exact 192.0.2.1", "HeLLo exact 2001:db8::1"],
+        ),
+        (
+            r"[abc] <HOST>",
+            vec!["a 192.0.2.1", "b 192.0.2.1", "c 192.0.2.1"],
+        ),
+        (r"\x66oo\t<HOST>", vec!["foo\t192.0.2.1"]),
+        (r"(abc){0,2} <HOST>", vec![" 192.0.2.1", "abcabc 192.0.2.1"]),
+        (r"(abc)+ <HOST>", vec!["abc 192.0.2.1", "abcabc 192.0.2.1"]),
+        (
+            r".* from <HOST> port",
+            vec![
+                "from 198.51.100.1 from 192.0.2.1 port",
+                "from 999.0.0.1 from 192.0.2.1 port",
+            ],
+        ),
+        (
+            r".* <HOST> port",
+            vec!["abc192.0.2.1 port", "hello 2001:db8::1 port"],
+        ),
+        (r"<HOST>abc", vec!["192.0.2.1abc", "2001:db8::1abc"]),
+        (
+            r"(?:prefix <HOST>)? end",
+            vec![" end", "prefix 192.0.2.1 end"],
+        ),
+        (
+            r"(?x) literal \s+ <HOST> \s+ end",
+            vec!["literal 192.0.2.1 end"],
+        ),
+    ] {
+        assert_reference(&[pattern], &lines);
+    }
+}
+
+#[test]
+fn overlapping_literals_keep_first_pattern_precedence() {
+    assert_reference(
+        &[r"abc.* <HOST>", r"abcdef.* <HOST>"],
+        &["abcdef 192.0.2.1"],
+    );
+    assert_reference(
+        &[r"later <HOST>", r"early <HOST>"],
+        &["early 198.51.100.1 later 192.0.2.1"],
+    );
+    assert_reference(
+        &[r".* <HOST> end", r"literal <HOST> end"],
+        &["literal 192.0.2.1 end"],
+    );
+}
+
+#[test]
+fn builtin_roundcube_case_insensitive_lines() {
+    let filter = crate::detect::filters::find("roundcube-auth").unwrap();
+    assert_reference(
+        filter.patterns,
+        &[
+            "Login failed for joe FROM 192.0.2.1",
+            "FAILED LOGIN FOR joe FROM 2001:db8::1",
+        ],
+    );
+}
+
+#[test]
+fn large_filter_candidate_scratch_keeps_reference_results() {
+    let owned: Vec<String> = (0..129).map(|i| format!("literal-{i:03} <HOST>")).collect();
+    let patterns: Vec<&str> = owned.iter().map(String::as_str).collect();
+    assert_reference(
+        &patterns,
+        &[
+            "literal-128 192.0.2.1",
+            "literal-000 2001:db8::1",
+            "no match",
+        ],
+    );
+}
+
+#[test]
+fn unicode_digits_do_not_turn_invalid_ips_into_ascii_prefix_bans() {
+    assert_reference(
+        &[r"from <HOST> end"],
+        &["from 192.0.2.1٣ end", "from ١٩٢.0.2.1 end"],
+    );
+    assert_reference(&[r"<HOST> end"], &["192.0.2.1٣ end", "١٩٢.0.2.1 end"]);
+    assert_reference(
+        &[r".* <HOST> port"],
+        &["hello 192.0.2.1٣ port", "hello ١٩٢.0.2.1 port"],
+    );
+    let matcher = JailMatcher::new(&[r"from <HOST> end".to_owned()]).unwrap();
+    assert!(matcher.try_match("from 192.0.2.1٣ end").is_none());
+}

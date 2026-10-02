@@ -38,9 +38,8 @@ fn expand_host_multiple() {
 #[test]
 fn literal_prefix_ssh() {
     let prefix = literal_prefix(r"sshd\[\d+\]: Failed password for .* from <HOST>");
-    // Should extract " from " — the longest literal before <HOST>
-    let p = prefix.unwrap();
-    assert!(p.contains("from ") || p.contains(" from"), "got: {p}");
+    // HIR literals contain interpreted punctuation, not regex escapes.
+    assert_eq!(prefix.as_deref(), Some("]: Failed password for "));
 }
 
 #[test]
@@ -51,9 +50,9 @@ fn literal_prefix_simple() {
 
 #[test]
 fn literal_prefix_none() {
-    // Pattern starts with <HOST> — no usable prefix
+    // A suffix literal is equally mandatory and safe as a prefilter.
     let prefix = literal_prefix(r"<HOST> did something");
-    assert!(prefix.is_none());
+    assert_eq!(prefix.as_deref(), Some(" did something"));
 }
 
 #[test]
@@ -85,8 +84,8 @@ fn expand_host_empty_pattern() {
 #[test]
 fn literal_prefix_all_metacharacters() {
     let prefix = literal_prefix(r".*\d+\[\d+\]<HOST>");
-    // All chars before <HOST> are metachar or escape sequences — no 3-char literal.
-    assert!(prefix.is_none());
+    // Escaped brackets are mandatory literals even around digit classes.
+    assert!(matches!(prefix.as_deref(), Some("[" | "]")));
 }
 
 #[test]
@@ -109,8 +108,8 @@ fn literal_prefix_fallback_too_short() {
     // When the trailing literal is empty, we fall through to extract_longest_literal
     // which requires >= 3 chars. All segments here are < 3 chars.
     let prefix = literal_prefix(r".*a\d+b\w+<HOST>");
-    // "a" and "b" are 1 char each — both below the 3-char minimum in extract_longest_literal.
-    assert!(prefix.is_none());
+    // Single-byte literals are safe too: both a and b are mandatory.
+    assert!(matches!(prefix.as_deref(), Some("a" | "b")));
 }
 
 // ---------------------------------------------------------------------------
@@ -186,8 +185,7 @@ fn extractor_captures_fallback() {
 fn extractor_after_literal_repeated_keyword() {
     // `from .* from <HOST>` — the literal " from " only appears once in
     // the pattern prefix (the earlier "from" lacks a leading space).
-    // AfterLiteral is safe because extract_ip_after_literal's retry loop
-    // skips occurrences not followed by a valid IP.
+    // Actual lines containing a repeated delimiter fall back to captures.
     match host_extractor(r"from .* from <HOST> port \d+") {
         HostExtractor::AfterLiteral(lit) => assert_eq!(lit, " from "),
         other => panic!("expected AfterLiteral, got {other:?}"),

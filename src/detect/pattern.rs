@@ -12,10 +12,11 @@ use crate::error::{Error, Result};
 /// `<HOST>` position via `captures()`, instead of scanning the full match
 /// span — which breaks when other IPs appear in the matched text.
 ///
+/// IP addresses use ASCII digits, matching the `IpAddr` parser contract.
 /// The first alternative handles plain IPv4 and `::ffff:`-mapped IPv4
 /// (common in ProFTPD, Courier, PAM logs). The second handles pure IPv6.
 const HOST_CAPTURE: &str =
-    r"(?P<host>(?:::[fF]{4}:)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[0-9a-fA-F:]{2,39})";
+    r"(?P<host>(?:::[fF]{4}:)?[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|[0-9a-fA-F:]{2,39})";
 
 /// The placeholder token in user patterns.
 const HOST_TAG: &str = "<HOST>";
@@ -57,130 +58,113 @@ pub enum HostExtractor {
     Captures,
 }
 
-/// Regex metacharacters used to identify literal boundaries.
-const META_CHARS: &[char] = &[
-    '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$',
-];
-
-/// Determine how to extract the host IP for a given pattern.
+/// Extract a mandatory literal for Aho-Corasick pre-filtering.
 ///
-/// Examines the literal text around `<HOST>` to decide the fastest
-/// extraction strategy. Falls back to `Captures` only when neither
-/// the before nor after literal is usable.
+/// Parses regex syntax and selects a mandatory exact literal. The literal may
+/// occur on either side of HOST. Returns `None` when none is provably required.
+pub fn literal_prefix(pattern: &str) -> Option<String> {
+    let expanded = expand_host(pattern).ok()?;
+    let hir = regex_syntax::parse(&expanded).ok()?;
+    mandatory_literal(&hir).map(str::to_owned)
+}
+
+/// Only exact literals on a mandatory path may reject an entire regex.
+/// HIR has already interpreted escapes, character classes and scoped flags.
+fn mandatory_literal(hir: &regex_syntax::hir::Hir) -> Option<&str> {
+    use regex_syntax::hir::HirKind;
+    match hir.kind() {
+        HirKind::Literal(lit) => std::str::from_utf8(&lit.0).ok().filter(|s| !s.is_empty()),
+        HirKind::Capture(capture) if capture.name.as_deref() != Some("host") => {
+            mandatory_literal(&capture.sub)
+        }
+        HirKind::Repetition(repetition) if repetition.min > 0 => mandatory_literal(&repetition.sub),
+        HirKind::Concat(parts) => parts
+            .iter()
+            .filter_map(mandatory_literal)
+            .max_by_key(|s| s.len()),
+        // Alternatives and zero-minimum repetitions may omit any one literal.
+        _ => None,
+    }
+}
+
+/// Find an exact literal immediately preceding the host, with an unambiguous
+/// token boundary after it. Otherwise named captures remain authoritative.
 pub fn host_extractor(pattern: &str) -> HostExtractor {
-    let Some(host_pos) = pattern.find(HOST_TAG) else {
+    use regex_syntax::hir::{Hir, HirKind};
+    fn flatten<'a>(hir: &'a Hir, parts: &mut Vec<&'a Hir>) {
+        match hir.kind() {
+            HirKind::Concat(children) => {
+                for child in children {
+                    flatten(child, parts);
+                }
+            }
+            HirKind::Capture(c) if c.name.as_deref() != Some("host") => flatten(&c.sub, parts),
+            _ => parts.push(hir),
+        }
+    }
+    let Some(hir) = expand_host(pattern)
+        .ok()
+        .and_then(|p| regex_syntax::parse(&p).ok())
+    else {
         return HostExtractor::Captures;
     };
-    let before = &pattern[..host_pos];
-    let after = &pattern[host_pos + HOST_TAG.len()..];
-
-    // HOST at the very start, or only preceded by ^ anchor.
-    if before.is_empty() || before.chars().all(|c| c == '^') {
+    let mut parts = Vec::new();
+    flatten(&hir, &mut parts);
+    let Some(pos) = parts
+        .iter()
+        .position(|p| matches!(p.kind(), HirKind::Capture(c) if c.name.as_deref() == Some("host")))
+    else {
+        return HostExtractor::Captures;
+    };
+    // End-of-match or an exact non-IP separator prevents scanning into suffix
+    // text. Regex assertions do not consume bytes and can be skipped here.
+    let next = parts
+        .iter()
+        .skip(pos + 1)
+        .find(|p| !matches!(p.kind(), HirKind::Look(_) | HirKind::Empty));
+    let safe_end = match next.map(|p| p.kind()) {
+        None => true,
+        Some(HirKind::Literal(lit)) => lit
+            .0
+            .first()
+            .is_some_and(|b| !b.is_ascii_hexdigit() && *b != b'.' && *b != b':'),
+        _ => false,
+    };
+    if !safe_end {
+        return HostExtractor::Captures;
+    }
+    if parts
+        .iter()
+        .take(pos)
+        .all(|p| matches!(p.kind(), HirKind::Look(_) | HirKind::Empty))
+    {
         return HostExtractor::AtStart;
     }
-
-    // Try literal immediately before HOST.
-    let lit_before = trailing_literal(before);
-    if lit_before.len() >= 2 {
-        let prefix_before_literal = &before[..before.len() - lit_before.len()];
-        if !prefix_before_literal.contains(&*lit_before) {
-            return HostExtractor::AfterLiteral(lit_before);
+    if let Some(HirKind::Literal(lit)) = pos
+        .checked_sub(1)
+        .and_then(|i| parts.get(i))
+        .map(|p| p.kind())
+        && let Ok(literal) = std::str::from_utf8(&lit.0)
+        && !literal.is_empty()
+    {
+        if literal.len() >= 2 {
+            return HostExtractor::AfterLiteral(literal.to_owned());
         }
+        // Mandatory non-IP separators on both sides delimit the full HOST
+        // token, preserving sshd's common "... user .* HOST port" fast path.
+        if literal
+            .as_bytes()
+            .last()
+            .is_some_and(|b| !b.is_ascii_hexdigit() && *b != b'.' && *b != b':')
+            && let Some(HirKind::Literal(suffix)) = next.map(|p| p.kind())
+            && let Ok(suffix) = std::str::from_utf8(&suffix.0)
+            && suffix.len() >= 2
+        {
+            return HostExtractor::BeforeLiteral(suffix.to_owned());
+        }
+        return HostExtractor::Captures;
     }
-
-    // Try literal immediately after HOST.
-    let lit_after = leading_literal(after);
-    if lit_after.len() >= 2 && !before.contains(&*lit_after) {
-        return HostExtractor::BeforeLiteral(lit_after);
-    }
-
     HostExtractor::Captures
-}
-
-/// Extract contiguous literal characters from the end of `s`.
-fn trailing_literal(s: &str) -> String {
-    let start = s
-        .rfind(|c: char| META_CHARS.contains(&c))
-        .map_or(0, |pos| pos + 1);
-    s[start..].to_string()
-}
-
-/// Extract contiguous literal characters from the start of `s`.
-fn leading_literal(s: &str) -> String {
-    let end = s.find(|c: char| META_CHARS.contains(&c)).unwrap_or(s.len());
-    s[..end].to_string()
-}
-
-/// Extract the literal prefix before `<HOST>` for Aho-Corasick pre-filtering.
-///
-/// Walks backwards from the `<HOST>` position to find the longest substring
-/// that contains no regex metacharacters. Returns `None` if no usable literal
-/// prefix exists (e.g. pattern starts with `<HOST>`).
-pub fn literal_prefix(pattern: &str) -> Option<String> {
-    let host_pos = pattern.find(HOST_TAG)?;
-    let before = &pattern[..host_pos];
-    if before.is_empty() {
-        return None;
-    }
-
-    // Walk backwards from the end of `before` to find a literal run.
-    // Stop at regex metacharacters.
-    let meta_chars = &[
-        '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$',
-    ];
-    let literal_start = before
-        .rfind(|c: char| meta_chars.contains(&c))
-        .map_or(0, |pos| pos + 1);
-
-    let trailing = &before[literal_start..];
-
-    // If the trailing segment is long enough, use it directly.
-    if trailing.len() >= 3 {
-        return Some(trailing.to_string());
-    }
-
-    // Trailing segment is too short (e.g. " " from `user .* <HOST>`).
-    // Search the whole prefix for a longer literal segment.
-    if let Some(longer) = extract_longest_literal(before) {
-        return Some(longer);
-    }
-
-    // Fall back to short trailing segment (still better than nothing).
-    if !trailing.is_empty() {
-        return Some(trailing.to_string());
-    }
-
-    None
-}
-
-/// Find the longest contiguous literal (no metacharacters) segment in `s`.
-fn extract_longest_literal(s: &str) -> Option<String> {
-    let meta_chars = &[
-        '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$',
-    ];
-    let mut best = "";
-    let mut current_start = 0;
-
-    for (i, c) in s.char_indices() {
-        if meta_chars.contains(&c) {
-            let segment = &s[current_start..i];
-            if segment.len() > best.len() {
-                best = segment;
-            }
-            current_start = i + c.len_utf8();
-        }
-    }
-    // Check the last segment
-    let segment = &s[current_start..];
-    if segment.len() > best.len() {
-        best = segment;
-    }
-
-    if best.len() >= 3 {
-        Some(best.to_string())
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]

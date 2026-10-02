@@ -167,11 +167,43 @@ fn bench_full_pipeline(c: &mut Criterion) {
     });
 }
 
+/// Prefix-present misses used to trigger a scan through every regex even
+/// though only the first literal appeared. Keep pattern counts and line bytes
+/// identical when comparing revisions.
+fn bench_candidate_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("candidate_scaling");
+    for count in [4, 16, 64, 128] {
+        let patterns: Vec<String> = (0..count)
+            .map(|i| format!(r"failure-{i:03} <HOST> !"))
+            .collect();
+        let matcher = JailMatcher::new(&patterns).expect("scaling patterns");
+        let line = "failure-000 192.0.2.1 harmless-end";
+        group.bench_function(format!("prefix_present_miss_{count}"), |b| {
+            b.iter(|| black_box(matcher.try_match(black_box(line))));
+        });
+    }
+    group.finish();
+    let mut group = c.benchmark_group("capture_correctness_paths");
+    let overlap = JailMatcher::new(&[r"abc.* <HOST>".into(), r"abcdef.* <HOST>".into()])
+        .expect("overlap patterns");
+    group.bench_function("overlapping_literals", |b| {
+        b.iter(|| black_box(overlap.try_match(black_box("abcdef 192.0.2.1"))));
+    });
+    let ambiguous = JailMatcher::new(&[r".* from <HOST> port".into()]).expect("ambiguous pattern");
+    group.bench_function("repeated_host_delimiter", |b| {
+        b.iter(|| {
+            black_box(ambiguous.try_match(black_box("from 198.51.100.1 from 192.0.2.1 port")))
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_try_match,
     bench_nginx_host_at_start,
     bench_date_parse,
-    bench_full_pipeline
+    bench_full_pipeline,
+    bench_candidate_scaling
 );
 criterion_main!(benches);

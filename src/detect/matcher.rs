@@ -1,9 +1,8 @@
 //! Fast matching engine for log lines.
 //!
-//! Phase 1: Aho-Corasick automaton over deduplicated literal prefixes rejects
-//! non-matching lines in ~10ns.
-//! Phase 2: AC-guided regex selection — only tries regexes whose literal
-//! prefix was found in the line, skipping impossible patterns.
+//! Phase 1: Aho-Corasick checks deduplicated mandatory regex literals.
+//! Phase 2: Eligible regexes run in their original order, including overlapping
+//! literal matches and patterns without a mandatory literal.
 //! IP extraction uses `find()` (DFA) plus positional string ops to extract
 //! the IP from the `<HOST>` location, falling back to `captures()` only for
 //! patterns with ambiguous literal context.
@@ -13,9 +12,7 @@ use std::net::IpAddr;
 use aho_corasick::AhoCorasick;
 use regex::Regex;
 
-use crate::detect::extract::{
-    extract_ip_after_literal, extract_ip_at_start, extract_ip_before_literal, normalize_mapped,
-};
+use crate::detect::extract::normalize_mapped;
 use crate::detect::pattern::{self, HostExtractor};
 use crate::error::{Error, Result};
 
@@ -150,52 +147,78 @@ impl JailMatcher {
     /// Returns `None` if the line doesn't match any fail pattern, or if it
     /// matches an ignoreregex pattern.
     pub fn try_match(&self, line: &str) -> Option<MatchResult> {
-        if let Some(ref ac) = self.ac {
-            if let Some(ac_match) = ac.find(line)
-                && let Some(primary) = self.ac_to_regex.get(ac_match.pattern().as_usize())
-            {
-                // Phase 2: Try only regexes whose AC prefix was found (fast path).
-                for &idx in primary {
-                    if let Some(result) = self.match_regex(idx, line) {
-                        return Some(result);
-                    }
-                }
-
-                // Fallback: try remaining regexes in order (handles cases
-                // where multiple AC prefixes appear in the same line, or
-                // patterns without an AC prefix).
-                for idx in 0..self.regexes.len() {
-                    if primary.contains(&idx) {
-                        continue;
-                    }
-                    if let Some(result) = self.match_regex(idx, line) {
-                        return Some(result);
-                    }
-                }
-
-                return None;
-            }
-
-            // AC found no known prefix — still try patterns that have no AC
-            // entry (they were never added to the automaton, so AC can't
-            // filter them). Patterns that DO have an AC entry are skipped: the
-            // line clearly lacks their required literal. `non_ac_regexes` is
-            // precomputed, so this common path allocates nothing.
-            for &idx in &self.non_ac_regexes {
-                if let Some(result) = self.match_regex(idx, line) {
-                    return Some(result);
-                }
-            }
-            None
-        } else {
-            // No AC automaton — try all regexes sequentially.
+        // A single regex already has its own literal acceleration. Avoid
+        // duplicating that work, and keep patterns without literals simple.
+        if self.regexes.len() == 1 {
+            return self.match_regex(0, line);
+        }
+        let Some(ac) = &self.ac else {
             for idx in 0..self.regexes.len() {
                 if let Some(result) = self.match_regex(idx, line) {
                     return Some(result);
                 }
             }
-            None
+            return None;
+        };
+        let mut found = ac.find_overlapping_iter(line);
+        let Some(first) = found.next() else {
+            for &idx in &self.non_ac_regexes {
+                if let Some(result) = self.match_regex(idx, line) {
+                    return Some(result);
+                }
+            }
+            return None;
+        };
+        // Keep the common small-jail path allocation-free. Larger custom
+        // filters use a scratch vector rather than limiting pattern coverage.
+        let mut local = [false; 128];
+        let mut large = Vec::new();
+        let candidates = if let Some(short) = local.get_mut(..self.regexes.len()) {
+            short
+        } else {
+            large.resize(self.regexes.len(), false);
+            large.as_mut_slice()
+        };
+        {
+            for &idx in &self.non_ac_regexes {
+                if let Some(candidate) = candidates.get_mut(idx) {
+                    *candidate = true;
+                }
+            }
+            // Overlapping literals can enable different regexes at the same
+            // position. A first-hit-only search cannot establish precedence.
+            let mut remaining = self.ac_to_regex.len();
+            for hit in std::iter::once(first).chain(found) {
+                if let Some(indices) = self.ac_to_regex.get(hit.pattern().as_usize()) {
+                    // Each regex owns one mandatory literal. A previously
+                    // enabled first entry therefore means this whole group
+                    // was already visited, even on a line with many repeats.
+                    if indices
+                        .first()
+                        .and_then(|idx| candidates.get(*idx))
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    for &idx in indices {
+                        if let Some(candidate) = candidates.get_mut(idx) {
+                            *candidate = true;
+                        }
+                    }
+                    remaining = remaining.saturating_sub(1);
+                    if remaining == 0 {
+                        break;
+                    }
+                }
+            }
         }
+        for (idx, enabled) in candidates.iter().enumerate() {
+            if *enabled && let Some(result) = self.match_regex(idx, line) {
+                return Some(result);
+            }
+        }
+        None
     }
 
     /// Try a single regex against `line`.
@@ -207,31 +230,64 @@ impl JailMatcher {
         let regex = self.regexes.get(idx)?;
         let extractor = self.extractors.get(idx)?;
 
+        let captures_ip = || {
+            let caps = regex.captures(line)?;
+            let ip = caps.name("host")?.as_str().parse::<IpAddr>().ok()?;
+            Some(normalize_mapped(ip))
+        };
         let ip = match extractor {
-            HostExtractor::AtStart => {
-                let m = regex.find(line)?;
-                extract_ip_at_start(m.as_str())?
-            }
-            HostExtractor::AfterLiteral(lit) => {
-                let m = regex.find(line)?;
-                extract_ip_after_literal(m.as_str(), lit)?
+            HostExtractor::AtStart | HostExtractor::AfterLiteral(_) => {
+                let span = regex.find(line)?.as_str();
+                let start = match extractor {
+                    HostExtractor::AfterLiteral(lit) => {
+                        // A wildcard may repeat the delimiter. Captures decide
+                        // which occurrence belongs to HOST in that case.
+                        let start = span.find(lit.as_str())?;
+                        if span.rfind(lit.as_str()) != Some(start) {
+                            return self.finish_capture(idx, line);
+                        }
+                        start + lit.len()
+                    }
+                    _ => 0,
+                };
+                let tail = span.get(start..)?;
+                let end = tail
+                    .find(|c: char| !c.is_ascii_hexdigit() && c != '.' && c != ':')
+                    .unwrap_or(tail.len());
+                normalize_mapped(tail.get(..end)?.parse::<IpAddr>().ok()?)
             }
             HostExtractor::BeforeLiteral(lit) => {
-                let m = regex.find(line)?;
-                extract_ip_before_literal(m.as_str(), lit)?
+                let span = regex.find(line)?.as_str();
+                let end = span.find(lit.as_str())?;
+                if span.rfind(lit.as_str()) != Some(end) {
+                    return self.finish_capture(idx, line);
+                }
+                let before = span.get(..end)?;
+                let start = before
+                    .rfind(|c: char| !c.is_ascii_hexdigit() && c != '.' && c != ':')
+                    .map_or(0, |i| i + 1);
+                normalize_mapped(before.get(start..)?.parse::<IpAddr>().ok()?)
             }
-            HostExtractor::Captures => {
-                let caps = regex.captures(line)?;
-                let host_text = caps.name("host")?.as_str();
-                let ip = host_text.parse::<IpAddr>().ok()?;
-                normalize_mapped(ip)
-            }
+            HostExtractor::Captures => captures_ip()?,
         };
 
         if self.ignore_regexes.iter().any(|re| re.is_match(line)) {
             return None;
         }
 
+        Some(MatchResult {
+            ip,
+            pattern_idx: idx,
+        })
+    }
+
+    /// Capture fallback for a repeated positional delimiter.
+    fn finish_capture(&self, idx: usize, line: &str) -> Option<MatchResult> {
+        let caps = self.regexes.get(idx)?.captures(line)?;
+        let ip = normalize_mapped(caps.name("host")?.as_str().parse::<IpAddr>().ok()?);
+        if self.ignore_regexes.iter().any(|re| re.is_match(line)) {
+            return None;
+        }
         Some(MatchResult {
             ip,
             pattern_idx: idx,

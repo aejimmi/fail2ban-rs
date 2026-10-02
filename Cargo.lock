@@ -400,6 +400,7 @@ dependencies = [
  "maxminddb",
  "nix",
  "regex",
+ "regex-syntax",
  "serde",
  "serde_json",
  "tell",
