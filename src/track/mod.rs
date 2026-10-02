@@ -47,6 +47,8 @@ pub type FirewallCmdBuilder = Box<dyn FnOnce(Vec<BanRecord>) -> FirewallCmd + Se
 
 /// Commands from the server to the tracker (query/mutate state).
 pub enum TrackerCmd {
+    #[cfg(test)]
+    QueryFailureCount { respond: oneshot::Sender<usize> },
     /// Return all active bans.
     QueryBans {
         respond: oneshot::Sender<Vec<BanRecord>>,

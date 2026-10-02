@@ -21,6 +21,8 @@ use crate::track::{FirewallCmdBuilder, JailStats, Stats, TrackerCmd};
 /// stall failure processing, sweeps, or other control commands.
 pub(super) async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
     match cmd {
+        #[cfg(test)]
+        TrackerCmd::QueryFailureCount { respond } => reply(respond, s.failures.len()),
         TrackerCmd::QueryBans { respond } => {
             reply(respond, s.store.read().bans.values().cloned().collect());
         }

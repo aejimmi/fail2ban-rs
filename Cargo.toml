@@ -88,6 +88,7 @@ strip = true
 overflow-checks = true
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
 
