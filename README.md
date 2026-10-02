@@ -9,11 +9,11 @@ fail2ban-rs eliminates all of that:
 - **Single ~5 MB binary** — no Python, no runtime, no interpreter startup overhead
 - **~9 MB idle RSS** — RSS depends on configuration, tracked IPs, and active bans
 - **Single-owner tracker** — bounded channels connect detection, tracking, and enforcement; persistence and some backends still use locks, and firewall commands run through one ordered executor
-- **Fast per-line matching** — Aho-Corasick pre-filter + AC-guided regex selection; see the scoped benchmarks below
+- **5x faster per-line matching in the synthetic Python `re` benchmark** — Aho-Corasick pre-filter + AC-guided regex selection
 - **Direct native firewall execution** — nftables/iptables/ipset commands use argv; the script backend uses `sh -c` with validated IP and jail substitutions
 - **Fast startup** — startup time depends on the command, configuration, persisted state, and firewall backend; CLI launch and daemon readiness are different measurements
 - **Embedded EtchDB state** — WAL and compacted snapshots store active bans, escalation counters, and metadata without SQLite; disk usage grows with retained state
-- **40 bytes of timestamp data per tracked IP/jail by default** — five 8-byte timestamps, rather than matched log lines; the payload scales as `8 × max_retry` bytes and excludes buffer structures, map keys, allocator overhead, active bans, and persistence (total RSS is higher)
+- **40 bytes of timestamps per tracked IP/jail by default** — ring buffers store 5 timestamps per IP, not matched log lines; excludes other state and overhead
 
 Everything else you'd expect: nftables/iptables/ipset/script backends, ban time escalation, config overlays, hot reload via SIGHUP, 88 built-in filters, systemd journal support.
 

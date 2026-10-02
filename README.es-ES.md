@@ -11,11 +11,11 @@ fail2ban-rs elimina todo eso:
 - **Binario único de ~5 MB** — sin Python, sin runtime, sin sobrecarga de arranque del intérprete
 - **~9 MB de RSS en reposo** — el RSS depende de la configuración, las IP registradas y los bloqueos activos
 - **Estado del tracker con propietario único** — canales acotados conectan detección, seguimiento y aplicación; la persistencia y algunos backends siguen usando bloqueos, y los comandos de firewall pasan por un único ejecutor ordenado
-- **Coincidencias rápidas por línea** — prefiltro Aho-Corasick y selección de expresiones regulares guiada por AC; consulta los benchmarks acotados más abajo
+- **Coincidencias por línea 5x más rápidas en el benchmark sintético de Python `re`** — prefiltro Aho-Corasick y selección de expresiones regulares guiada por AC
 - **Ejecución directa de comandos de firewall nativos** — nftables/iptables/ipset usan argv; el backend de script usa `sh -c` con sustituciones validadas de IP y cárcel
 - **Inicio rápido** — el tiempo depende del comando, la configuración, el estado persistido y el backend; el lanzamiento de la CLI y la disponibilidad del demonio son mediciones diferentes
 - **Estado integrado con EtchDB** — el WAL y las instantáneas compactadas almacenan bloqueos activos, contadores de escalación y metadatos sin SQLite; el espacio en disco crece con el estado retenido
-- **40 bytes de marcas de tiempo por IP/cárcel registrada por defecto** — cinco marcas de 8 bytes, en lugar de líneas de registro; estos datos ocupan `8 × max_retry` bytes y excluyen las estructuras de los búferes, claves de los mapas, sobrecarga del asignador, bloqueos activos y persistencia (el RSS total es mayor)
+- **40 bytes de marcas de tiempo por IP/cárcel registrada por defecto** — los búferes circulares almacenan 5 marcas de tiempo por IP, no líneas de registro; excluye otros datos y sobrecarga
 
 Todo lo demás que esperarías: backends nftables/iptables/ipset/script, escalación del tiempo de bloqueo, superposición de configuración, recarga en caliente vía SIGHUP, 88 filtros integrados, soporte para systemd journal.
 
