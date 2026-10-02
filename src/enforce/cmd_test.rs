@@ -197,3 +197,99 @@ async fn test_xtables_run_and_output_prepend_wait_flag() {
     assert!(out.status.success());
     assert_eq!(calls(&log), vec![vec!["-N", "c"], vec!["-L", "c"]]);
 }
+
+#[tokio::test]
+async fn test_bounded_capture_preserves_exact_limit_and_rejects_next_byte() {
+    let data = vec![b'x'; 32];
+    let bytes = read_bounded(Some(data.as_slice()), 32, false, "probe", "stdout")
+        .await
+        .expect("exact bound");
+    assert_eq!(bytes, data);
+    let too_large = vec![b'x'; 33];
+    let error = read_bounded(Some(too_large.as_slice()), 32, false, "probe", "stdout")
+        .await
+        .expect_err("overflow must not be a truncated listing");
+    assert!(
+        error
+            .to_string()
+            .contains("stdout exceeds 32 byte output limit")
+    );
+}
+
+#[tokio::test]
+async fn test_stderr_truncates_but_drains_to_eof() {
+    let data = vec![b'x'; 1024 * 1024];
+    let bytes = read_bounded(Some(data.as_slice()), 64, true, "probe", "stderr")
+        .await
+        .expect("large diagnostics are drained");
+    assert_eq!(bytes.len(), 64);
+    assert!(bytes.ends_with(TRUNCATED));
+    assert!(bytes.starts_with(b"xxx"));
+}
+
+#[tokio::test]
+async fn test_run_discards_large_stdout_and_bounds_stderr_without_deadlock() {
+    let out = execute(
+        "sh",
+        "noisy",
+        &[
+            "-c",
+            "head -c 262144 /dev/zero >&2 & head -c 33554432 /dev/zero; wait",
+        ],
+        Duration::from_secs(5),
+        false,
+    )
+    .await
+    .expect("both pipes must finish");
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    assert_eq!(out.stderr.len(), MAX_STDERR_BYTES);
+    assert!(out.stderr.ends_with(TRUNCATED));
+}
+
+#[tokio::test]
+async fn test_output_overflow_kills_command_instead_of_returning_partial_listing() {
+    let start = Instant::now();
+    let error = output_with_timeout(
+        "sh",
+        "listing",
+        &["-c", "head -c 16777217 /dev/zero; sleep 60"],
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("oversized listing must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("stdout exceeds 16777216 byte output limit"),
+        "{error}"
+    );
+    assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn test_discarded_stdout_still_times_out_and_kills_background_writer() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let pid_file = dir.path().join("pid");
+    let script = format!("sleep 60 2>/dev/null & echo $! > '{}'", pid_file.display());
+    let error = execute(
+        "sh",
+        "background",
+        &["-c", &script],
+        Duration::from_millis(200),
+        false,
+    )
+    .await
+    .expect_err("discarding bytes must still drain the stdout pipe");
+    assert!(error.to_string().contains("timed out"));
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(pid) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!alive(pid), "background process {pid} must be killed");
+}
