@@ -52,6 +52,17 @@ pub enum Error {
         message: String,
     },
 
+    /// A native firewall query produced too much output to parse safely.
+    #[error("firewall error: {label} {stream} exceeds {max_bytes} byte output limit")]
+    FirewallOutputLimit {
+        /// Backend/command label.
+        label: String,
+        /// Pipe whose complete output was required.
+        stream: &'static str,
+        /// Maximum retained bytes.
+        max_bytes: usize,
+    },
+
     /// A persistence-layer operation failed.
     ///
     /// Owns no third-party types so a semver bump of the storage backend cannot
