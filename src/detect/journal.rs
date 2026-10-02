@@ -307,19 +307,21 @@ async fn stream<R: AsyncBufRead + Unpin>(
     cursor: &mut Option<String>,
     cancel: &CancellationToken,
 ) -> Session {
-    let mut buf = String::new();
+    let mut raw = Vec::new();
+    let mut line = String::new();
     let mut progressed = false;
     loop {
-        buf.clear();
+        raw.clear();
+        line.clear();
         let result = tokio::select! {
             () = cancel.cancelled() => return Session::Stopped,
-            r = read_line_bounded(&mut reader, &mut buf, &ctx.jail_id) => r,
+            r = read_line_bounded(&mut reader, &mut raw, &mut line, &ctx.jail_id) => r,
         };
         match result {
             Ok(0) => return Session::ended(progressed, "journalctl stream ended"),
             Ok(_) => {
                 progressed = true;
-                if !handle_entry(ctx, buf.trim_end(), cursor, cancel).await {
+                if !handle_entry(ctx, line.trim_end(), cursor, cancel).await {
                     return Session::Stopped;
                 }
             }
@@ -403,45 +405,46 @@ async fn process_line(
 
 /// Read a single line from the async reader, bounded by [`MAX_ENTRY_LEN`].
 ///
-/// Uses `fill_buf` / `consume` to accumulate bytes into `buf` up to the
-/// limit. If the line exceeds [`MAX_ENTRY_LEN`], logs a warning, drains
-/// remaining bytes to the next newline, clears `buf`, and returns a
-/// non-zero byte count so the caller can distinguish it from EOF (0).
+/// Raw bytes are decoded into `line` once per completed line, so a UTF-8
+/// sequence split across `fill_buf` chunks stays intact. Oversized lines are
+/// drained and skipped; the non-zero byte count distinguishes them from EOF.
 async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     reader: &mut R,
-    buf: &mut String,
+    raw: &mut Vec<u8>,
+    line: &mut String,
     jail_id: &str,
 ) -> std::io::Result<usize> {
     let mut total = 0usize;
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            return Ok(total); // EOF — 0 if nothing was buffered
+            decode_line(raw, line); // flush a trailing partial line at EOF
+            return Ok(total); // 0 if nothing was buffered
         }
         if let Some(pos) = memchr_newline(available) {
-            let to_take = finish_line(available, pos, total, buf, jail_id);
+            let to_take = finish_line(available, pos, total, raw, line, jail_id);
             reader.consume(to_take);
             return Ok(total + to_take);
         }
         // No newline found in this chunk.
         let chunk_len = available.len();
         if total + chunk_len > MAX_ENTRY_LEN {
-            return skip_oversized(reader, buf, chunk_len, jail_id).await;
+            return skip_oversized(reader, raw, chunk_len, jail_id).await;
         }
-        append_valid_utf8(buf, available);
+        raw.extend_from_slice(available);
         reader.consume(chunk_len);
         total += chunk_len;
     }
 }
 
-/// Complete a line whose newline sits at `pos` in `available`: append it to
-/// `buf`, or drop the whole line if it would exceed [`MAX_ENTRY_LEN`]. Returns
-/// the byte count (newline included) the caller must consume.
+/// Append the line ending at `pos` to `raw` and decode it, or drop the line
+/// if oversized. Returns the byte count (newline included) to consume.
 fn finish_line(
     available: &[u8],
     pos: usize,
     total: usize,
-    buf: &mut String,
+    raw: &mut Vec<u8>,
+    line: &mut String,
     jail_id: &str,
 ) -> usize {
     let to_take = pos + 1;
@@ -452,9 +455,10 @@ fn finish_line(
             reason = "oversized",
             "journal line skipped"
         );
-        buf.clear();
+        raw.clear();
     } else if let Some(slice) = available.get(..to_take) {
-        append_valid_utf8(buf, slice);
+        raw.extend_from_slice(slice);
+        decode_line(raw, line);
     }
     to_take
 }
@@ -462,7 +466,7 @@ fn finish_line(
 /// Skip an oversized line: consume the current chunk and drain to the next newline.
 async fn skip_oversized<R: AsyncBufRead + Unpin>(
     reader: &mut R,
-    buf: &mut String,
+    raw: &mut Vec<u8>,
     chunk_len: usize,
     jail_id: &str,
 ) -> std::io::Result<usize> {
@@ -473,7 +477,7 @@ async fn skip_oversized<R: AsyncBufRead + Unpin>(
         "journal line skipped"
     );
     reader.consume(chunk_len);
-    buf.clear();
+    raw.clear();
     drain_until_newline(reader).await?;
     // Return non-zero so caller knows this is not EOF.
     Ok(MAX_ENTRY_LEN + 1)
@@ -501,10 +505,14 @@ fn memchr_newline(buf: &[u8]) -> Option<usize> {
     buf.iter().position(|&b| b == b'\n')
 }
 
-/// Append bytes to a `String`, replacing invalid UTF-8 sequences.
-fn append_valid_utf8(buf: &mut String, bytes: &[u8]) {
-    let text = String::from_utf8_lossy(bytes);
-    buf.push_str(&text);
+/// Decode `raw` into `line` (invalid UTF-8 replaced) and clear it. Per-line
+/// decoding keeps UTF-8 sequences split across chunks intact.
+fn decode_line(raw: &mut Vec<u8>, line: &mut String) {
+    if raw.is_empty() {
+        return;
+    }
+    line.push_str(&String::from_utf8_lossy(raw));
+    raw.clear();
 }
 
 #[cfg(test)]

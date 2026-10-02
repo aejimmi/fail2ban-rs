@@ -7,9 +7,10 @@ use super::*;
 async fn test_read_line_bounded_newline_in_single_chunk() {
     let input: &[u8] = b"hello\n";
     let mut reader = BufReader::new(input);
+    let mut raw = Vec::new();
     let mut buf = String::new();
 
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
 
@@ -23,15 +24,16 @@ async fn test_read_line_bounded_two_lines() {
     let input: &[u8] = b"one\ntwo\n";
     let mut reader = BufReader::new(input);
 
+    let mut raw = Vec::new();
     let mut buf = String::new();
-    let n1 = read_line_bounded(&mut reader, &mut buf, "test")
+    let n1 = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
     assert_eq!(n1, 4);
     assert_eq!(buf, "one\n");
 
     buf.clear();
-    let n2 = read_line_bounded(&mut reader, &mut buf, "test")
+    let n2 = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
     assert_eq!(n2, 4);
@@ -43,9 +45,10 @@ async fn test_read_line_bounded_two_lines() {
 async fn test_read_line_bounded_eof_returns_zero() {
     let input: &[u8] = b"";
     let mut reader = BufReader::new(input);
+    let mut raw = Vec::new();
     let mut buf = String::new();
 
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
 
@@ -58,9 +61,10 @@ async fn test_read_line_bounded_eof_returns_zero() {
 async fn test_read_line_bounded_partial_line_then_eof() {
     let input: &[u8] = b"no-newline";
     let mut reader = BufReader::new(input);
+    let mut raw = Vec::new();
     let mut buf = String::new();
 
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
 
@@ -74,9 +78,10 @@ async fn test_read_line_bounded_partial_line_then_eof() {
 async fn test_read_line_bounded_line_spans_multiple_chunks() {
     let input: &[u8] = b"helloworld\n";
     let mut reader = BufReader::with_capacity(4, input);
+    let mut raw = Vec::new();
     let mut buf = String::new();
 
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
 
@@ -93,9 +98,10 @@ async fn test_read_line_bounded_oversized_line_skipped() {
     line.push('\n');
     let bytes = line.into_bytes();
     let mut reader = BufReader::with_capacity(MAX_ENTRY_LEN + 100, bytes.as_slice());
+    let mut raw = Vec::new();
     let mut buf = String::new();
 
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
 
@@ -108,9 +114,10 @@ async fn test_read_line_bounded_oversized_line_skipped() {
 async fn test_read_line_bounded_invalid_utf8_replaced() {
     let input: &[u8] = &[0xff, 0xfe, b'\n'];
     let mut reader = BufReader::new(input);
+    let mut raw = Vec::new();
     let mut buf = String::new();
 
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
 
@@ -118,6 +125,23 @@ async fn test_read_line_bounded_invalid_utf8_replaced() {
     assert!(buf.ends_with('\n'));
     // The two invalid bytes decode to the U+FFFD replacement character.
     assert!(buf.contains('\u{FFFD}'));
+}
+
+/// A multi-byte character split across `fill_buf` chunks must decode as one
+/// character, not two U+FFFD.
+#[tokio::test]
+async fn test_read_line_bounded_multibyte_char_spans_chunks() {
+    let input: &[u8] = "héllo\n".as_bytes(); // 'é' is the two bytes 0xc3 0xa9
+    let mut reader = BufReader::with_capacity(2, input);
+    let mut raw = Vec::new();
+    let mut buf = String::new();
+
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
+        .await
+        .unwrap();
+
+    assert_eq!(n, 7);
+    assert_eq!(buf, "héllo\n");
 }
 
 /// An oversized line whose first chunks contain NO newline forces the
@@ -136,9 +160,10 @@ async fn test_read_line_bounded_skip_oversized_no_newline_in_first_chunk() {
     line.push('\n');
     let bytes = line.into_bytes();
     let mut reader = BufReader::with_capacity(4096, bytes.as_slice());
+    let mut raw = Vec::new();
     let mut buf = String::new();
 
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
 
@@ -160,15 +185,16 @@ async fn test_read_line_bounded_recovers_after_oversized_line() {
     let bytes = input.into_bytes();
     let mut reader = BufReader::with_capacity(4096, bytes.as_slice());
 
+    let mut raw = Vec::new();
     let mut buf = String::new();
-    let n1 = read_line_bounded(&mut reader, &mut buf, "test")
+    let n1 = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
     assert_eq!(n1, MAX_ENTRY_LEN + 1);
     assert_eq!(buf, "");
 
     buf.clear();
-    let n2 = read_line_bounded(&mut reader, &mut buf, "test")
+    let n2 = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
     assert_eq!(n2, 5);
@@ -180,9 +206,10 @@ async fn test_read_line_bounded_recovers_after_oversized_line() {
 async fn test_read_line_bounded_empty_line() {
     let input: &[u8] = b"\n";
     let mut reader = BufReader::new(input);
+    let mut raw = Vec::new();
     let mut buf = String::new();
 
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
 
@@ -349,8 +376,9 @@ async fn test_parse_entry_large_non_utf8_message_truncated_and_matched() {
     let mut input = json.into_bytes();
     input.push(b'\n');
     let mut reader = BufReader::new(input.as_slice());
+    let mut raw = Vec::new();
     let mut buf = String::new();
-    let n = read_line_bounded(&mut reader, &mut buf, "test")
+    let n = read_line_bounded(&mut reader, &mut raw, &mut buf, "test")
         .await
         .unwrap();
     assert!(
