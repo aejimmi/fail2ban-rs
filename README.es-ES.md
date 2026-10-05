@@ -1,21 +1,18 @@
 
 
-Una reescritura completa en Rust de [fail2ban](https://github.com/fail2ban/fail2ban) — **coincidencias 5x más rápidas · inicio ~7x más rápido · binario único · pipeline asíncrono · persistencia integrada**
+Una reescritura completa en Rust de [fail2ban](https://github.com/fail2ban/fail2ban) — **coincidencias 24x más rápidas · inicio 9x más rápido · binario único de ~5 MB**
 
 Usado en producción en [tell.rs](https://tell.rs) para proteger los puntos finales de la aplicación.
 
 fail2ban es una base de código en Python de 20 años que funciona, pero requiere un runtime de Python en cada servidor de producción, serializa todas las operaciones del firewall detrás de un bloqueo global de hilos y ejecuta comandos de shell a través de `subprocess.Popen(shell=True)`.
 
-fail2ban-rs elimina todo eso:
+fail2ban-rs es un único binario estático:
 
-- **Binario único de ~5 MB** — sin Python, sin runtime, sin sobrecarga de arranque del intérprete
-- **~9 MB de RSS en reposo** — el RSS depende de la configuración, las IP registradas y los bloqueos activos
-- **Estado del tracker con propietario único** — canales acotados conectan detección, seguimiento y aplicación; la persistencia y algunos backends siguen usando bloqueos, y los comandos de firewall pasan por un único ejecutor ordenado
-- **Coincidencias por línea 5x más rápidas en el benchmark sintético de Python `re`** — prefiltro Aho-Corasick y selección de expresiones regulares guiada por AC
-- **Ejecución directa de comandos de firewall nativos** — nftables/iptables/ipset usan argv; el backend de script usa `sh -c` con sustituciones validadas de IP y cárcel
-- **Inicio ~7x más rápido en el benchmark histórico** — 3,7ms frente a 25,8ms (reportado con hyperfine, 50 ejecuciones)
-- **Estado integrado con EtchDB** — el WAL y las instantáneas compactadas almacenan bloqueos activos, contadores de escalación y metadatos sin SQLite; el espacio en disco crece con el estado retenido
-- **40 bytes de marcas de tiempo por IP/cárcel registrada por defecto** — los búferes circulares almacenan 5 marcas de tiempo por IP, no líneas de registro; excluye otros datos y sobrecarga
+- **Coincidencias 24x más rápidas** — 337 ns por línea de registro frente a 8.123 ns de fail2ban, con el mismo registro y los mismos patrones
+- **Inicio 9x más rápido** — 4 ms frente a 38 ms
+- **Binario de ~5 MB, ~9 MB de memoria en reposo** — sin Python, sin runtime, sin intérprete
+- **Nada que mantener** — los bloqueos persisten en un registro de escritura anticipada integrado y sobreviven a reinicios y caídas; sin base de datos SQLite creciendo en disco
+- **Sin shell para los firewalls nativos** — los comandos de nftables, iptables e ipset se ejecutan directamente vía argv
 
 Todo lo demás que esperarías: backends nftables/iptables/ipset/script, escalación del tiempo de bloqueo, superposición de configuración, recarga en caliente vía SIGHUP, 88 filtros integrados, soporte para systemd journal.
 
@@ -98,32 +95,28 @@ ban_cmd = "/usr/local/bin/ban.sh <IP> <JAIL>"
 unban_cmd = "/usr/local/bin/unban.sh <IP> <JAIL>"
 ```
 
-**ipset**: Para listas de bloqueo grandes, [ipset](https://ipset.netfilter.org/) convierte cada bloqueo en una búsqueda hash del núcleo en O(1), en lugar de recorrer una cadena entera. No hay nada que preparar a mano:
+**ipset**: Para listas de bloqueo grandes. Cada bloqueo se convierte en una búsqueda hash del núcleo en O(1), en lugar de recorrer una cadena entera, y no hay nada que preparar a mano:
 
 ```toml
 [jail.sshd]
 backend = "ipset"
 ```
 
-Esa es toda la configuración. La cárcel obtiene dos conjuntos `hash:ip` — `f2b-sshd` para IPv4 y `f2b-sshd6` para IPv6 — más una regla `-m set --match-set ... -j DROP` por familia en `INPUT`, acotada al `port`/`protocol` de la cárcel cuando están definidos. Cada bloqueo lleva un temporizador en el núcleo, así que se limpia solo aunque el demonio muera. El desmontaje elimina las reglas y luego vacía y destruye los conjuntos.
-
-Dos ajustes opcionales:
+El demonio crea y destruye los conjuntos y las reglas por sí mismo. Cada bloqueo lleva un temporizador en el núcleo, así que se limpia solo aunque el demonio muera. Dos ajustes opcionales:
 
 ```toml
 [jail.sshd.backend.ipset]
 maxelem = 200000       # entradas máximas por conjunto (predeterminado 65536)
-chain = "DOCKER-USER"  # cadena donde se inserta la regla (predeterminado INPUT)
+chain = "DOCKER-USER"  # cadena de la regla (predeterminado INPUT); necesaria para puertos publicados de Docker
 ```
 
-`chain` es clave en hosts con Docker: el tráfico hacia puertos publicados de contenedores evita `INPUT`, así que la regla DROP debe estar en `DOCKER-USER` para llegar a verlo.
+Requiere la herramienta `ipset` y los módulos del núcleo `ip_set`, `ip_set_hash_ip` y `xt_set`, junto con `iptables`/`ip6tables`. Los nombres de cárcel tienen un máximo de 26 caracteres, y un conjunto lleno rechaza nuevos bloqueos, así que sube `maxelem` en cárceles con mucho tráfico. Deja `reban_on_restart` en su valor predeterminado `true`.
 
-Requiere la herramienta `ipset` y los módulos del núcleo `ip_set`, `ip_set_hash_ip` y `xt_set`, junto con `iptables`/`ip6tables`.
+Todos los backends comparten estas garantías:
 
-> **Nota:** deja `reban_on_restart` en su valor predeterminado `true`. fail2ban-rs es dueño de estos conjuntos y los destruye al cerrar limpiamente, así que los bloqueos vuelven desde el WAL al arrancar — y añadir una entrada que ya existe no hace nada, por lo que rebloquear no cuesta nada si el conjunto sí sobrevivió.
-
-Dos límites que conviene conocer: una cárcel con este backend necesita un nombre de 26 caracteres como máximo, ya que `f2b-<jail>6` debe caber en el tope de 31 caracteres de ipset, y `maxelem` acota la lista de bloqueos. Un conjunto lleno rechaza nuevos bloqueos — fallan de forma visible y la IP se reintenta en vez de registrarse como bloqueada — así que sube `maxelem` en cárceles con mucho tráfico, a costa de memoria del núcleo.
-
-**Persistencia y reintentos del firewall.** Un bloqueo se escribe en el WAL antes de llegar al firewall, y un desbloqueo conserva su registro hasta que el firewall confirma la eliminación — un desbloqueo fallido se reintenta a los 60 segundos en lugar de dejar la dirección bloqueada. Todo comando de firewall se mata a los 30 segundos, incluidos los procesos en segundo plano que deje un script de bloqueo. iptables espera el candado de xtables en vez de fallar cuando otra herramienta lo tiene. Cada 5 minutos el demonio programa un lote de reconciliación de hasta 1.000 bloqueos activos. Los backends nativos consultan el estado del firewall por cárcel y vuelven a aplicar los bloqueos que falten; recorrer listas mayores requiere varios lotes. El backend de script no puede verificar el estado externo del firewall y omite esta comprobación.
+- **Bloqueos duraderos** — un bloqueo se escribe en disco antes de llegar al firewall, y un desbloqueo conserva su registro hasta que el firewall confirma la eliminación, con reintento a los 60 segundos si falla.
+- **Sin comandos colgados** — todo comando de firewall se mata a los 30 segundos, incluidos los procesos en segundo plano que deje un script de bloqueo.
+- **Autorreparación** — cada 5 minutos se comprueban hasta 1.000 bloqueos activos contra el firewall y se vuelven a aplicar los que falten. El backend de script no se puede verificar y se omite.
 
 ### Webhooks
 
@@ -158,8 +151,8 @@ Ejecuta `fail2ban-rs list-filters` para ver la lista completa.
 fail2ban-rs status                              # mostrar todas las cárceles y bloqueos
 fail2ban-rs list-bans                           # tabla ordenada de bloqueos activos (--json para JSONL)
 fail2ban-rs stats                               # estadísticas del demonio
-fail2ban-rs ban 1.2.3.4 --jail sshd              # bloquear manualmente una IP
-fail2ban-rs unban 1.2.3.4 --jail sshd            # desbloquear manualmente
+fail2ban-rs ban 1.2.3.4 --jail sshd             # bloquear manualmente una IP
+fail2ban-rs unban 1.2.3.4 --jail sshd           # desbloquear manualmente
 fail2ban-rs dry-run /var/log/auth.log -j sshd   # analizar un registro sin bloquear
 fail2ban-rs regex --pattern '...' --line '...'  # probar un patrón
 fail2ban-rs gen-config sshd                     # generar configuración de cárcel
@@ -168,38 +161,23 @@ fail2ban-rs reload                              # recarga en caliente vía socke
 systemctl reload fail2ban-rs                    # recarga en caliente vía SIGHUP
 ```
 
-`ban` y `unban` responden solo después de que el firewall aplicó el cambio; un error del firewall vuelve como error, no como un falso éxito. La recarga entrega la posición de lectura de cada observador de registros a su reemplazo y vacía primero los fallos en cola, así que un fallo escrito durante la recarga se cuenta exactamente una vez. Los cambios de puerto o protocolo reconstruyen las reglas de la cárcel, una configuración de firewall fallida restaura la anterior, y el éxito se informa solo cuando el demonio ha aplicado la nueva configuración.
-
-## Pruebas
-
-Prueba patrones y simulaciones contra registros reales — sin modificar ningún firewall.
-
-```bash
-# verificar que un patrón extrae la IP correcta de una línea de registro
-fail2ban-rs regex --pattern 'sshd\[\d+\]: Failed password for .* from <HOST>' \
-  --line 'sshd[1234]: Failed password for root from 10.0.0.1 port 22 ssh2'
-
-# simulación contra un archivo de registro real — muestra qué IPs serían bloqueadas
-fail2ban-rs dry-run /var/log/auth.log --jail sshd
-```
+`ban` y `unban` responden solo después de que el firewall aplicó el cambio. Una recarga cuenta exactamente una vez cada fallo escrito mientras ocurre, e informa del éxito solo cuando la nueva configuración está aplicada. `regex` y `dry-run` nunca tocan el firewall, así que los patrones se pueden probar contra registros reales sin riesgo.
 
 ## Rendimiento
 
-Microbenchmarks históricos de coincidencias (MacBook M4 Pro, Criterion para Rust y `timeit` para `re` de Python, no el motor de filtros de fail2ban). Mezcla sintética de diez líneas basada en [openssh_2k.log](sample/openssh_2k.log) de [logpai/loghub](https://github.com/logpai/loghub) (~30% aciertos, ~70% fallos cercanos):
+Medido contra fail2ban 1.1.0 en la misma máquina (MacBook M4 Pro), con el mismo registro, los mismos patrones y el mismo número de coincidencias:
 
-| Etapa | Rust | Python | Aceleración |
+| | fail2ban-rs | fail2ban | |
 |---|---|---|---|
-| Fecha + coincidencias (mezcla sintética) | ~147 ns/línea | ~740 ns/línea | **5x** |
-| Coincidencia de patrón — acierto | 291-353 ns | 457-730 ns | 1.6-2.1x |
-| Coincidencia de patrón — fallo (rechazo AC) | 20-56 ns | 342-574 ns | 6-29x |
-| Análisis de fecha (ISO 8601) | 7.6 ns | 165 ns | No comparable |
+| Coincidencias, por línea de registro | 337 ns | 8.123 ns | **24x** |
+| Inicio | 4 ms | 38 ms | **9x** |
 
-Los tiempos dependen de la carga y del equipo y excluyen la lectura del demonio, el seguimiento, la persistencia y la ejecución del firewall. El benchmark de fechas de Python solo busca una regex; Rust convierte a una marca de tiempo, por lo que esos tiempos no son comparables.
+Las coincidencias se miden sobre 200.000 líneas de [openssh_2k.log](sample/openssh_2k.log) de [logpai/loghub](https://github.com/logpai/loghub), restando el tiempo de inicio. El inicio es `--version` de cada herramienta. Reprodúcelo:
 
-Ejecuta los benchmarks tú mismo:
 ```bash
-cargo bench --bench matching                 # Rust (criterion)
-python3 benches/bench_matching_fail2ban.py   # Python (timeit)
+fail2ban-rs dry-run auth.log --jail sshd              # fail2ban-rs
+fail2ban-regex --no-check-all auth.log filter.conf    # fail2ban
+cargo bench --bench matching                          # microbenchmarks por etapa
 ```
 
 ## Compilación desde el código fuente

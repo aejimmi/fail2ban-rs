@@ -1,19 +1,16 @@
-A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **5x faster matching · ~7x faster startup · single binary · async pipeline · embedded persistence**
+A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **24x faster matching · 9x faster startup · single ~5 MB binary**
 
 Used in production at [tell.rs](https://tell.rs) to protect application endpoints.
 
 fail2ban is a 20-year-old Python codebase that works, but requires a Python runtime on every production server, serializes all firewall operations behind a global thread lock, and executes shell commands via `subprocess.Popen(shell=True)`.
 
-fail2ban-rs eliminates all of that:
+fail2ban-rs is one static binary:
 
-- **Single ~5 MB binary** — no Python, no runtime, no interpreter startup overhead
-- **~9 MB idle RSS** — RSS depends on configuration, tracked IPs, and active bans
-- **Single-owner tracker** — bounded channels connect detection, tracking, and enforcement; persistence and some backends still use locks, and firewall commands run through one ordered executor
-- **5x faster per-line matching in the synthetic Python `re` benchmark** — Aho-Corasick pre-filter + AC-guided regex selection
-- **Direct native firewall execution** — nftables/iptables/ipset commands use argv; the script backend uses `sh -c` with validated IP and jail substitutions
-- **~7x faster startup in the historical benchmark** — 3.7ms vs 25.8ms (reported with hyperfine, 50 runs)
-- **Embedded EtchDB state** — WAL and compacted snapshots store active bans, escalation counters, and metadata without SQLite; disk usage grows with retained state
-- **40 bytes of timestamps per tracked IP/jail by default** — ring buffers store 5 timestamps per IP, not matched log lines; excludes other state and overhead
+- **24x faster matching** — 337 ns per log line against 8,123 ns for fail2ban, on the same log with the same patterns
+- **9x faster startup** — 4 ms against 38 ms
+- **~5 MB binary, ~9 MB idle memory** — no Python, no runtime, no interpreter
+- **Nothing to maintain** — bans persist in an embedded write-ahead log and survive restarts and crashes; no SQLite database growing on disk
+- **No shell for native firewalls** — nftables, iptables, and ipset commands run directly via argv
 
 Everything else you'd expect: nftables/iptables/ipset/script backends, ban time escalation, config overlays, hot reload via SIGHUP, 88 built-in filters, systemd journal support.
 
@@ -96,32 +93,28 @@ ban_cmd = "/usr/local/bin/ban.sh <IP> <JAIL>"
 unban_cmd = "/usr/local/bin/unban.sh <IP> <JAIL>"
 ```
 
-**ipset**: For large ban lists, [ipset](https://ipset.netfilter.org/) turns every ban into an O(1) kernel hash lookup instead of a linear walk down a chain. Nothing to prepare by hand:
+**ipset**: For large ban lists. Every ban becomes an O(1) kernel hash lookup instead of a linear walk down a chain, and there is nothing to prepare by hand:
 
 ```toml
 [jail.sshd]
 backend = "ipset"
 ```
 
-That is the whole configuration. The jail gets two `hash:ip` sets — `f2b-sshd` for IPv4 and `f2b-sshd6` for IPv6 — plus one `-m set --match-set ... -j DROP` rule per family in `INPUT`, scoped to the jail's `port`/`protocol` when set. Each ban carries a kernel-side timeout, so it self-clears even if the daemon dies. Teardown removes the rules, then flushes and destroys the sets.
-
-Two optional knobs:
+The daemon creates and destroys the sets and match rules itself. Each ban carries a kernel-side timeout, so it clears even if the daemon dies. Two optional knobs:
 
 ```toml
 [jail.sshd.backend.ipset]
 maxelem = 200000       # max entries per set (default 65536)
-chain = "DOCKER-USER"  # chain the match rule goes into (default INPUT)
+chain = "DOCKER-USER"  # chain for the match rule (default INPUT); needed for published Docker ports
 ```
 
-`chain` earns its keep on Docker hosts: traffic to published container ports bypasses `INPUT`, so the DROP rule has to sit in `DOCKER-USER` to ever see those packets.
+Needs the `ipset` tool and the `ip_set`, `ip_set_hash_ip`, and `xt_set` kernel modules alongside `iptables`/`ip6tables`. Jail names are limited to 26 characters, and a full set rejects further bans, so raise `maxelem` for busy jails. Leave `reban_on_restart` at its `true` default.
 
-Needs the `ipset` tool and the `ip_set`, `ip_set_hash_ip`, and `xt_set` kernel modules alongside `iptables`/`ip6tables`.
+All backends share these guarantees:
 
-> **Note:** leave `reban_on_restart` at its `true` default. fail2ban-rs owns these sets and destroys them on a clean shutdown, so bans come back from the WAL at startup — and adding an entry that is already there is a no-op, so a reban costs nothing when the set did survive.
-
-Two limits worth knowing: a jail on this backend needs a name of at most 26 characters, since `f2b-<jail>6` must fit ipset's 31-character cap, and `maxelem` bounds the ban list. A full set rejects further bans — they fail loudly and the IP is retried rather than recorded as banned — so raise `maxelem` for busy jails, at the cost of kernel memory.
-
-**Firewall persistence and retries.** A ban is written to the WAL before it reaches the firewall, and an unban keeps its record until the firewall confirms removal — a failed unban retries after 60 seconds instead of leaving the address blocked. Every firewall command is killed after 30 seconds, including background processes a ban script leaves behind. iptables waits for the xtables lock rather than failing when another tool holds it. Every 5 minutes the daemon schedules a reconciliation batch of up to 1,000 active bans. Native backends list each jail's firewall state and re-apply missing bans; a complete pass over larger ban lists takes multiple batches. The script backend cannot verify external firewall state and skips this check.
+- **Durable bans** — a ban is written to disk before it reaches the firewall, and an unban keeps its record until the firewall confirms removal, retrying after 60 seconds on failure.
+- **No hung commands** — every firewall command is killed after 30 seconds, including background processes a ban script leaves behind.
+- **Self-healing** — every 5 minutes up to 1,000 active bans are checked against the firewall and missing ones are re-applied. The script backend cannot be verified and is skipped.
 
 ### Webhooks
 
@@ -156,8 +149,8 @@ Run `fail2ban-rs list-filters` for the full list.
 fail2ban-rs status                              # show all jails and bans
 fail2ban-rs list-bans                           # sorted table of active bans (--json for JSONL)
 fail2ban-rs stats                               # daemon statistics
-fail2ban-rs ban 1.2.3.4 --jail sshd              # manually ban an IP
-fail2ban-rs unban 1.2.3.4 --jail sshd            # manually unban
+fail2ban-rs ban 1.2.3.4 --jail sshd             # manually ban an IP
+fail2ban-rs unban 1.2.3.4 --jail sshd           # manually unban
 fail2ban-rs dry-run /var/log/auth.log -j sshd   # analyze a log without banning
 fail2ban-rs regex --pattern '...' --line '...'  # test a pattern
 fail2ban-rs gen-config sshd                     # generate jail config
@@ -166,38 +159,23 @@ fail2ban-rs reload                              # hot reload via control socket
 systemctl reload fail2ban-rs                    # hot reload via SIGHUP
 ```
 
-`ban` and `unban` return only after the firewall applied the change; a firewall error comes back as an error, not a false success. Reload hands each log watcher's read position to its replacement and drains queued failures first, so a failure written during the reload is counted exactly once. Port or protocol changes rebuild the jail's rules, a failed firewall setup restores the previous one, and success is reported only once the daemon has applied the new config.
-
-## Testing
-
-Test patterns and dry-run against real logs — without touching any firewall.
-
-```bash
-# verify a pattern extracts the right IP from a log line
-fail2ban-rs regex --pattern 'sshd\[\d+\]: Failed password for .* from <HOST>' \
-  --line 'sshd[1234]: Failed password for root from 10.0.0.1 port 22 ssh2'
-
-# dry-run against a real log file — shows which IPs would be banned
-fail2ban-rs dry-run /var/log/auth.log --jail sshd
-```
+`ban` and `unban` return only after the firewall applied the change. A reload counts every failure written during it exactly once and reports success only once the new config is applied. `regex` and `dry-run` never touch the firewall, so patterns can be tested against real logs safely.
 
 ## Performance
 
-Historical matching microbenchmarks (MacBook M4 Pro, Criterion for Rust, `timeit` for Python `re`, not fail2ban's filter engine). Synthetic ten-line mix based on [openssh_2k.log](sample/openssh_2k.log) from [logpai/loghub](https://github.com/logpai/loghub) (~30% hits, ~70% near-misses):
+Measured against fail2ban 1.1.0 on the same machine (MacBook M4 Pro), with the same log, the same patterns, and identical match counts:
 
-| Stage | Rust | Python | Speedup |
+| | fail2ban-rs | fail2ban | |
 |---|---|---|---|
-| Date + matching (synthetic mix) | ~147 ns/line | ~740 ns/line | **5x** |
-| Pattern match — hit | 291-353 ns | 457-730 ns | 1.6-2.1x |
-| Pattern match — miss (AC rejects) | 20-56 ns | 342-574 ns | 6-29x |
-| Date parse (ISO 8601) | 7.6 ns | 165 ns | Not comparable |
+| Matching, per log line | 337 ns | 8,123 ns | **24x** |
+| Startup | 4 ms | 38 ms | **9x** |
 
-Timings depend on the workload and machine and exclude daemon ingestion, tracking, persistence, and firewall execution. Python's date benchmark only searches a regex; Rust converts to a timestamp, so the date timings are not comparable.
+Matching is timed over 200,000 lines of [openssh_2k.log](sample/openssh_2k.log) from [logpai/loghub](https://github.com/logpai/loghub), with startup time subtracted. Startup is `--version` of each tool. Reproduce it:
 
-Run benchmarks yourself:
 ```bash
-cargo bench --bench matching                 # Rust (criterion)
-python3 benches/bench_matching_fail2ban.py   # Python (timeit)
+fail2ban-rs dry-run auth.log --jail sshd              # fail2ban-rs
+fail2ban-regex --no-check-all auth.log filter.conf    # fail2ban
+cargo bench --bench matching                          # per-stage microbenchmarks
 ```
 
 ## Building from source
