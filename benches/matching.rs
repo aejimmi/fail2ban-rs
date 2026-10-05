@@ -126,13 +126,22 @@ fn bench_nginx_host_at_start(c: &mut Criterion) {
     group.finish();
 }
 
+/// Syslog-format line (default /var/log/auth.log layout, loghub OpenSSH).
+const SYSLOG_FAILED_PASSWORD: &str = "Dec 10 06:55:46 LabSZ sshd[24200]: \
+    Failed password for invalid user admin from 173.234.31.186 port 38926 ssh2";
+
 fn bench_date_parse(c: &mut Criterion) {
     let parser = DateParser::new(DateFormat::Iso8601).expect("iso8601 parser");
+    let syslog = DateParser::new(DateFormat::Syslog).expect("syslog parser");
 
     let mut group = c.benchmark_group("date_parse");
 
     group.bench_function("iso8601", |b| {
         b.iter(|| parser.parse_line(black_box(HIT_INVALID_USER)));
+    });
+
+    group.bench_function("syslog", |b| {
+        b.iter(|| syslog.parse_line(black_box(SYSLOG_FAILED_PASSWORD)));
     });
 
     group.finish();

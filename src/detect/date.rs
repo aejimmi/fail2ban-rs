@@ -1,10 +1,13 @@
 //! Log line timestamp parsing.
 //!
 //! Supports four explicit date format presets. No auto-detection — the format
-//! must be specified in the jail config. ISO 8601 uses a zero-alloc byte
-//! scanner; other formats fall back to regex + chrono.
+//! must be specified in the jail config. ISO 8601 and syslog use zero-alloc
+//! byte scanners (syslog additionally caches its local-time conversion, see
+//! [`syslog`]); epoch and common log format use regex + chrono.
 
-use chrono::{Datelike, Local, LocalResult, NaiveDateTime, TimeZone};
+mod syslog;
+
+use chrono::NaiveDateTime;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -27,8 +30,12 @@ pub enum DateFormat {
 /// Parser that extracts timestamps from log lines.
 pub struct DateParser {
     format: DateFormat,
-    /// Regex for syslog/epoch/common formats. Unused for ISO 8601.
+    /// Regex for syslog/epoch/common formats. Unused for ISO 8601. For
+    /// syslog it is only a fallback for lines with non-ASCII bytes where
+    /// Unicode `\s`/`\d` semantics could matter.
     regex: Option<Regex>,
+    /// Cached year and local UTC offset for syslog conversion.
+    syslog_cache: syslog::SyslogCache,
 }
 
 impl DateParser {
@@ -51,59 +58,21 @@ impl DateParser {
                 source: e,
             })?)
         };
-        Ok(Self { format, regex })
+        Ok(Self {
+            format,
+            regex,
+            syslog_cache: syslog::SyslogCache::default(),
+        })
     }
 
     /// Parse a log line and extract a unix timestamp.
     pub fn parse_line(&self, line: &str) -> Option<i64> {
-        if self.format == DateFormat::Iso8601 {
-            scan_iso8601(line.as_bytes())
-        } else {
-            let caps = self.regex.as_ref()?.captures(line)?;
-            match self.format {
-                DateFormat::Syslog => parse_syslog(&caps),
-                DateFormat::Epoch => parse_epoch(&caps),
-                DateFormat::Common => parse_common(&caps),
-                DateFormat::Iso8601 => unreachable!(),
-            }
+        match self.format {
+            DateFormat::Iso8601 => scan_iso8601(line.as_bytes()),
+            DateFormat::Syslog => syslog::parse(line, self.regex.as_ref(), &self.syslog_cache),
+            DateFormat::Epoch => parse_epoch(&self.regex.as_ref()?.captures(line)?),
+            DateFormat::Common => parse_common(&self.regex.as_ref()?.captures(line)?),
         }
-    }
-}
-
-fn parse_syslog(caps: &regex::Captures<'_>) -> Option<i64> {
-    let month_str = caps.get(1)?.as_str();
-    let day: u32 = caps.get(2)?.as_str().parse().ok()?;
-    let hour: u32 = caps.get(3)?.as_str().parse().ok()?;
-    let min: u32 = caps.get(4)?.as_str().parse().ok()?;
-    let sec: u32 = caps.get(5)?.as_str().parse().ok()?;
-    let month = month_from_abbr(month_str)?;
-
-    // Syslog carries no year — assume the current year, interpreted as LOCAL
-    // time (the syslog convention).
-    let now = Local::now();
-    let ts = syslog_timestamp(now.year(), month, day, hour, min, sec)?;
-    // Rollover correction: a December log replayed on January 1st would land
-    // ~1 year in the future. If the date is more than a day ahead of now, it
-    // belongs to the previous year.
-    if ts > now.timestamp() + 86_400 {
-        return syslog_timestamp(now.year() - 1, month, day, hour, min, sec);
-    }
-    Some(ts)
-}
-
-/// Build a Unix timestamp for a syslog date, interpreting it as LOCAL time.
-///
-/// Ambiguous (fall-back DST) or nonexistent (spring-forward DST) local times
-/// fall back to a UTC interpretation rather than panicking.
-fn syslog_timestamp(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> Option<i64> {
-    let dt = NaiveDateTime::new(
-        chrono::NaiveDate::from_ymd_opt(year, month, day)?,
-        chrono::NaiveTime::from_hms_opt(hour, min, sec)?,
-    );
-    match Local.from_local_datetime(&dt) {
-        LocalResult::Single(t) => Some(t.timestamp()),
-        // Ambiguous or nonexistent — fall back to UTC interpretation.
-        LocalResult::Ambiguous(..) | LocalResult::None => Some(dt.and_utc().timestamp()),
     }
 }
 
