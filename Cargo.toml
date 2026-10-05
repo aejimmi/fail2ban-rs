@@ -17,10 +17,12 @@ async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 ipnet = { version = "2", features = ["serde"] }
+memchr = "2"
 nix = { version = "0.29", default-features = false, features = ["net", "signal", "socket", "user"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+simdutf8 = "0.1"
 tell = { version = "0.1", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "io-util", "net", "fs", "time", "process"] }

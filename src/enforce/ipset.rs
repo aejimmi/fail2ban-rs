@@ -16,6 +16,7 @@ use tracing::{debug, warn};
 
 use crate::enforce::{FirewallBackend, cmd};
 use crate::error::{Error, Result};
+use crate::text::lossy;
 
 /// ipset's hard kernel ceiling for a per-entry timeout, in seconds (~24.85
 /// days). Exceeding it is a syntax error, not a saturating value.
@@ -243,7 +244,7 @@ impl IpsetBackend {
                 stderr.trim()
             )));
         }
-        Ok(parse_members(&String::from_utf8_lossy(&output.stdout)))
+        Ok(parse_members(&lossy(&output.stdout)))
     }
 }
 

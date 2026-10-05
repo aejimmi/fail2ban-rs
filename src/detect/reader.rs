@@ -9,6 +9,7 @@
 use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::PathBuf;
 
+use memchr::memchr;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -19,6 +20,7 @@ use crate::detect::ignore::IgnoreList;
 use crate::detect::matcher::JailMatcher;
 use crate::detect::resume::{FilePosition, open_log};
 use crate::detect::watcher::{Failure, MAX_LINE_LEN};
+use crate::text::lossy;
 
 /// Shared, move-by-value state for a blocking read loop.
 ///
@@ -266,7 +268,8 @@ fn drain_reader(
         return false;
     }
     if !carry.is_empty() {
-        let remainder = String::from_utf8_lossy(carry).into_owned();
+        // Owned: the borrow must end before `carry` is cleared.
+        let remainder = lossy(carry).into_owned();
         carry.clear();
         if !ctx.handle_line(remainder.trim_end()) {
             return false;
@@ -291,7 +294,7 @@ fn read_line_bounded(
     reader.by_ref().take(limit).read_until(b'\n', carry)?;
 
     if carry.last() == Some(&b'\n') {
-        out.push_str(&String::from_utf8_lossy(carry));
+        out.push_str(&lossy(carry));
         carry.clear();
         return Ok(ReadOutcome::Complete);
     }
@@ -320,7 +323,7 @@ fn drain_until_newline(reader: &mut BufReader<std::fs::File>) -> std::io::Result
         if available.is_empty() {
             break; // EOF
         }
-        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+        if let Some(pos) = memchr(b'\n', available) {
             reader.consume(pos + 1);
             break;
         }

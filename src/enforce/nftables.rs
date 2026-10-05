@@ -15,6 +15,7 @@ use tracing::debug;
 
 use crate::enforce::{FirewallBackend, cmd};
 use crate::error::{Error, Result};
+use crate::text::lossy;
 
 /// Address family of the fail2ban-rs table.
 const FAMILY: &str = "inet";
@@ -171,7 +172,7 @@ impl NftablesBackend {
                 stderr.trim()
             )));
         }
-        Ok(parse_set_elements(&String::from_utf8_lossy(&output.stdout)))
+        Ok(parse_set_elements(&lossy(&output.stdout)))
     }
 }
 
