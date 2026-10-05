@@ -1,6 +1,6 @@
 [package]
 name = "fail2ban-rs"
-version = "1.5.4"
+version = "1.5.5"
 edition = "2024"
 description = "A pure-Rust fail2ban replacement. Single static binary, fast two-phase matching, nftables/iptables/ipset firewall backends."
 license = "MIT"

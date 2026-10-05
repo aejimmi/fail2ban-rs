@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.5
+
+Fix:
+- firewall: nft, iptables and ipset are found on NixOS, where they live in the system profile instead of the usual system directories
+
 ## v1.5.4
 
 New:
