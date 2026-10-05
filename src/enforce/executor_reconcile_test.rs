@@ -14,6 +14,8 @@ enum Snap {
     Unsupported,
     /// `Err(..)` — the query failed.
     Fail,
+    /// Deterministically oversized firewall listing.
+    OutputLimit,
 }
 
 /// Configurable backend recording every call it receives.
@@ -70,6 +72,11 @@ impl FirewallBackend for ReconcileMock {
             Snap::Set(ips) => Ok(Some(ips.iter().copied().collect())),
             Snap::Unsupported => Ok(None),
             Snap::Fail => Err(Error::firewall("snapshot failed")),
+            Snap::OutputLimit => Err(Error::FirewallOutputLimit {
+                label: "listing".to_string(),
+                stream: "stdout",
+                max_bytes: 16 * 1024 * 1024,
+            }),
         }
     }
     fn name(&self) -> &'static str {
@@ -297,4 +304,13 @@ fn test_group_by_jail_preserves_order() {
         .map(|(j, g)| (*j, g.iter().map(|b| b.ip).collect()))
         .collect();
     assert_eq!(shape, vec![("a", vec![ip(1), ip(3)]), ("b", vec![ip(2)])]);
+}
+
+#[tokio::test]
+async fn test_reconcile_output_limit_does_not_repeat_listing_per_ip() {
+    let (mock, calls) = ReconcileMock::new(true, Snap::OutputLimit, vec![]);
+    let backends = single(mock);
+    let bans = (1..=250).map(|last| record(last, "sshd")).collect();
+    reconcile_bans(&backends, bans).await;
+    assert_eq!(take(&calls), vec!["snapshot:sshd"]);
 }

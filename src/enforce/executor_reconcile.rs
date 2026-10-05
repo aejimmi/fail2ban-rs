@@ -14,6 +14,7 @@ use std::net::IpAddr;
 use tracing::{debug, info, warn};
 
 use crate::enforce::FirewallBackend;
+use crate::error::{Error, Result};
 use crate::track::state::BanRecord;
 
 /// Verify each ban against the firewall and re-apply any the kernel is missing.
@@ -80,7 +81,13 @@ async fn reconcile_jail<S: BuildHasher>(
         );
         return 0;
     }
-    let snapshot = load_snapshot(backend, jail).await;
+    let snapshot = match load_snapshot(backend, jail).await {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            warn!(jail, error = %e, "reconcile skipped; firewall listing exceeds output limit");
+            return 0;
+        }
+    };
     let mut reapplied = 0usize;
     for ban in group {
         if is_missing(backend, ban, snapshot.as_ref()).await && reapply(backend, ban, now).await {
@@ -91,17 +98,22 @@ async fn reconcile_jail<S: BuildHasher>(
 }
 
 /// Fetch a jail's banned-IP snapshot. `None` means "check per IP" — either
-/// the backend does not support snapshots or the query failed.
-async fn load_snapshot(backend: &dyn FirewallBackend, jail: &str) -> Option<HashSet<IpAddr>> {
+/// the backend does not support snapshots or the query failed. An output-limit
+/// failure stops this jail: per-IP fallback can repeat the same oversized listing.
+async fn load_snapshot(
+    backend: &dyn FirewallBackend,
+    jail: &str,
+) -> Result<Option<HashSet<IpAddr>>> {
     match backend.snapshot(jail).await {
-        Ok(snapshot) => snapshot,
+        Ok(snapshot) => Ok(snapshot),
+        Err(e @ Error::FirewallOutputLimit { .. }) => Err(e),
         Err(e) => {
             warn!(
                 jail = %jail,
                 error = %e,
                 "reconcile snapshot failed; falling back to per-IP checks"
             );
-            None
+            Ok(None)
         }
     }
 }

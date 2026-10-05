@@ -12,6 +12,8 @@ use std::ffi::OsStr;
 use std::process::{Output, Stdio};
 use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncReadExt};
+
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -32,6 +34,13 @@ pub(crate) const MAX_RULE_DELETES: usize = 16;
 /// for a contended xtables lock or a slow user script while still bounding
 /// how long one stuck command can stall ban enforcement.
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Complete native firewall listings must fit this bound. Oversized listings
+/// fail explicitly rather than presenting truncated state to reconciliation.
+const MAX_STDOUT_BYTES: usize = 16 * 1024 * 1024;
+/// Retain a bounded diagnostic prefix while draining the rest of stderr.
+const MAX_STDERR_BYTES: usize = 64 * 1024;
+const TRUNCATED: &[u8] = b"\n[stderr truncated]\n";
 
 /// Run `program args...` under [`COMMAND_TIMEOUT`] and capture its output.
 ///
@@ -56,21 +65,104 @@ where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
 {
-    let child = spawn_in_group(program, label, args)?;
-    // With `process_group(0)` the child's pid is its process-group id.
+    execute(program, label, args, limit, true).await
+}
+
+/// Drain both pipes concurrently before reaping the leader. Keeping the leader
+/// unreaped preserves its process-group identity if a background child keeps a
+/// pipe open until the timeout or the output limit fires.
+async fn execute<P, S>(
+    program: P,
+    label: &str,
+    args: &[S],
+    limit: Duration,
+    capture_stdout: bool,
+) -> Result<Output>
+where
+    P: AsRef<OsStr>,
+    S: AsRef<OsStr>,
+{
+    let mut child = spawn_in_group(program, label, args)?;
     let pgid = child.id();
-    let fut = child.wait_with_output();
-    tokio::pin!(fut);
-    if let Ok(res) = tokio::time::timeout(limit, &mut fut).await {
-        return res.map_err(|e| Error::firewall(format!("{label} command failed: {e}")));
-    }
-    // Kill the group while `fut` still owns the child, so the leader is not
-    // yet reaped and its pgid cannot have been recycled.
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let result = tokio::time::timeout(limit, async {
+        let (stdout, stderr) = tokio::try_join!(
+            read_bounded(
+                stdout,
+                if capture_stdout { MAX_STDOUT_BYTES } else { 0 },
+                !capture_stdout,
+                label,
+                "stdout"
+            ),
+            read_bounded(stderr, MAX_STDERR_BYTES, true, label, "stderr"),
+        )?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| Error::firewall(format!("{label} command failed: {e}")))?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    })
+    .await;
+    let error = match result {
+        Ok(Ok(out)) => return Ok(out),
+        Ok(Err(error)) => error,
+        Err(_) => Error::firewall(format!(
+            "{label} command timed out after {}s and was killed",
+            limit.as_secs_f64()
+        )),
+    };
     kill_group(pgid, label);
-    Err(Error::firewall(format!(
-        "{label} command timed out after {}s and was killed",
-        limit.as_secs_f64()
-    )))
+    // Also request a direct kill if signalling the group failed, and reap the
+    // leader instead of leaving a zombie after a limit or timeout.
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    Err(error)
+}
+
+async fn read_bounded<R: AsyncRead + Unpin>(
+    pipe: Option<R>,
+    max_bytes: usize,
+    truncate: bool,
+    label: &str,
+    stream: &'static str,
+) -> Result<Vec<u8>> {
+    let Some(mut pipe) = pipe else {
+        return Ok(Vec::new());
+    };
+    let mut bytes = Vec::new();
+    let mut chunk = Box::new([0u8; 8192]);
+    let mut truncated = false;
+    loop {
+        let n = pipe
+            .read(&mut *chunk)
+            .await
+            .map_err(|e| Error::firewall(format!("{label} {stream} read failed: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        if n > remaining {
+            if !truncate {
+                return Err(Error::FirewallOutputLimit {
+                    label: label.to_string(),
+                    stream,
+                    max_bytes,
+                });
+            }
+            truncated = true;
+        }
+        bytes.extend_from_slice(chunk.get(..n.min(remaining)).unwrap_or_default());
+    }
+    if truncated {
+        bytes.truncate(max_bytes.saturating_sub(TRUNCATED.len()));
+        bytes.extend_from_slice(TRUNCATED.get(..max_bytes).unwrap_or(TRUNCATED));
+    }
+    Ok(bytes)
 }
 
 /// Spawn `program args...` as the leader of a new process group, with
@@ -123,7 +215,7 @@ where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
 {
-    let out = output(program, label, args).await?;
+    let out = execute(program, label, args, COMMAND_TIMEOUT, false).await?;
     check_status(label, &out)
 }
 
