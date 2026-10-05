@@ -209,15 +209,28 @@ pub trait FirewallBackend: Send + Sync {
 }
 
 /// Known system directories to search for firewall binaries.
-const SYSTEM_DIRS: &[&str] = &["/usr/sbin", "/sbin", "/usr/bin", "/bin"];
+///
+/// The FHS directories come first; `/run/current-system/sw/bin` is the NixOS
+/// system profile, which has no FHS layout.
+const SYSTEM_DIRS: &[&str] = &[
+    "/usr/sbin",
+    "/sbin",
+    "/usr/bin",
+    "/bin",
+    "/run/current-system/sw/bin",
+];
 
 /// Resolve a binary name to an absolute path in known system directories.
 ///
-/// Searches `/usr/sbin`, `/sbin`, `/usr/bin`, `/bin` in order, returning
-/// the first path where the file exists. Fails early if the binary is not
-/// found, preventing PATH-based resolution at runtime.
+/// Searches [`SYSTEM_DIRS`] in order, returning the first path where the file
+/// exists. Fails early if the binary is not found, preventing PATH-based
+/// resolution at runtime.
 pub fn resolve_binary(name: &str) -> Result<PathBuf> {
-    for dir in SYSTEM_DIRS {
+    resolve_binary_in(SYSTEM_DIRS, name)
+}
+
+fn resolve_binary_in(dirs: &[&str], name: &str) -> Result<PathBuf> {
+    for dir in dirs {
         let path = Path::new(dir).join(name);
         if path.exists() {
             return Ok(path);
@@ -225,7 +238,7 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf> {
     }
     Err(Error::firewall(format!(
         "binary '{name}' not found in {}",
-        SYSTEM_DIRS.join(", ")
+        dirs.join(", ")
     )))
 }
 

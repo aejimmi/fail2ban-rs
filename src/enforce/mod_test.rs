@@ -36,6 +36,42 @@ fn resolve_binary_rejects_unknown_binary_name() {
     assert!(err.to_string().contains("not found"), "got: {err}");
 }
 
+/// Issue #50: NixOS has no FHS layout, so firewall binaries only exist in the
+/// system profile.
+#[test]
+fn system_dirs_include_the_nixos_system_profile() {
+    assert!(SYSTEM_DIRS.contains(&"/run/current-system/sw/bin"));
+}
+
+#[test]
+fn resolve_binary_falls_through_to_a_later_dir_when_earlier_ones_lack_it() {
+    let fhs = tempfile::tempdir().expect("tempdir");
+    let profile = tempfile::tempdir().expect("tempdir");
+    std::fs::write(profile.path().join("nft"), "").expect("write fake nft");
+    let dirs = [
+        fhs.path().to_str().expect("utf-8 path"),
+        profile.path().to_str().expect("utf-8 path"),
+    ];
+
+    let path = resolve_binary_in(&dirs, "nft").expect("nft should resolve from the last dir");
+    assert_eq!(path, profile.path().join("nft"));
+}
+
+#[test]
+fn resolve_binary_prefers_the_earlier_dir_when_both_have_it() {
+    let fhs = tempfile::tempdir().expect("tempdir");
+    let profile = tempfile::tempdir().expect("tempdir");
+    std::fs::write(fhs.path().join("nft"), "").expect("write fake nft");
+    std::fs::write(profile.path().join("nft"), "").expect("write fake nft");
+    let dirs = [
+        fhs.path().to_str().expect("utf-8 path"),
+        profile.path().to_str().expect("utf-8 path"),
+    ];
+
+    let path = resolve_binary_in(&dirs, "nft").expect("nft should resolve");
+    assert_eq!(path, fhs.path().join("nft"));
+}
+
 #[test]
 fn create_backend_nftables() {
     if let Ok(backend) = create_backend(&crate::config::Backend::Nftables) {
