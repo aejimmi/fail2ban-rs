@@ -183,18 +183,6 @@ pub(super) fn rollback_ban(
 }
 
 #[cfg(test)]
-mod persistence_failure_test {
-    use super::*;
-
-    #[test]
-    fn failed_write_prevents_following_state_mutation() {
-        let mut indexed_and_counted = false;
-        let result = persist_then_apply(
-            &mut indexed_and_counted,
-            |_| Err(Error::persistence("injected WAL failure")),
-            |state| *state = true,
-        );
-        assert!(matches!(result, Err(Error::Persistence { .. })));
-        assert!(!indexed_and_counted);
-    }
-}
+#[allow(clippy::panic, clippy::unwrap_used)]
+#[path = "execute_test.rs"]
+mod execute_test;

@@ -93,3 +93,8 @@ fn purge_expired(store: &BanStore, keys: &[(IpAddr, String)]) {
         warn!(phase = "startup", error = %e, "expired ban purge failed");
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
+#[path = "restored_test.rs"]
+mod restored_test;

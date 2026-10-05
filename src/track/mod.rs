@@ -47,8 +47,6 @@ pub type FirewallCmdBuilder = Box<dyn FnOnce(Vec<BanRecord>) -> FirewallCmd + Se
 
 /// Commands from the server to the tracker (query/mutate state).
 pub enum TrackerCmd {
-    #[cfg(test)]
-    QueryFailureCount { respond: oneshot::Sender<usize> },
     /// Return all active bans.
     QueryBans {
         respond: oneshot::Sender<Vec<BanRecord>>,
@@ -145,6 +143,14 @@ pub struct JailStats {
 )]
 mod test_support;
 
+#[cfg(all(test, unix))]
+#[allow(
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::needless_pass_by_value
+)]
+mod ban_fault_test;
 #[cfg(test)]
 #[allow(
     clippy::panic,
@@ -160,7 +166,23 @@ mod commands_test;
     clippy::unwrap_used,
     clippy::needless_pass_by_value
 )]
+mod commands_unban_test;
+#[cfg(test)]
+#[allow(
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::needless_pass_by_value
+)]
 mod failure_test;
+#[cfg(all(test, unix))]
+#[allow(
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::needless_pass_by_value
+)]
+mod fault_support;
 #[cfg(test)]
 #[allow(
     clippy::panic,
@@ -177,6 +199,14 @@ mod manual_test;
     clippy::needless_pass_by_value
 )]
 mod regression_test;
+#[cfg(all(test, unix))]
+#[allow(
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::needless_pass_by_value
+)]
+mod restart_expired_test;
 #[cfg(test)]
 #[allow(
     clippy::panic,
@@ -193,3 +223,11 @@ mod run_test;
     clippy::needless_pass_by_value
 )]
 mod sweep_test;
+#[cfg(all(test, unix))]
+#[allow(
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::needless_pass_by_value
+)]
+mod unban_retry_test;

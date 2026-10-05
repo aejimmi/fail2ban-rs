@@ -97,17 +97,30 @@ enum Event {
     Reconcile,
 }
 
+/// Interval for periodic maintenance sweeps.
+///
+/// A persistent schedule: recreating a sleep after every failure or control
+/// event can postpone pruning indefinitely under load.
+fn maintenance_interval() -> tokio::time::Interval {
+    let period = tokio::time::Duration::from_secs(60);
+    let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval
+}
+
 /// Wait for events and handle them until cancelled or an input closes.
-async fn event_loop(mut state: TrackerState, mut rx: TrackerRx, cancel: CancellationToken) {
+///
+/// Returns the final state so tests can inspect it after shutdown; `run`
+/// simply drops it.
+async fn event_loop(
+    mut state: TrackerState,
+    mut rx: TrackerRx,
+    cancel: CancellationToken,
+) -> TrackerState {
     let mut reconcile_interval =
         tokio::time::interval(tokio::time::Duration::from_secs(RECONCILE_INTERVAL_SECS));
     reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Keep maintenance on a persistent schedule: recreating its sleep after
-    // every failure/control event can postpone pruning indefinitely under load.
-    let sweep_period = tokio::time::Duration::from_secs(60);
-    let mut sweep_interval =
-        tokio::time::interval_at(tokio::time::Instant::now() + sweep_period, sweep_period);
-    sweep_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sweep_interval = maintenance_interval();
     loop {
         let next_unban_sleep = next_sweep_duration(state.index.next_expiry);
         let event = tokio::select! {
@@ -121,7 +134,7 @@ async fn event_loop(mut state: TrackerState, mut rx: TrackerRx, cancel: Cancella
             _ = reconcile_interval.tick() => Event::Reconcile,
         };
         if !handle_event(event, &mut state).await {
-            break;
+            return state;
         }
     }
 }
@@ -272,115 +285,6 @@ fn next_sweep_duration(next_expiry: Option<i64>) -> tokio::time::Duration {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
-mod sweep_starvation_regression {
-    use super::*;
-    use crate::track::test_support::{test_global_config, test_jail_config};
-    use std::net::Ipv4Addr;
-    use tokio::sync::oneshot;
-
-    async fn failure_count(tx: &mpsc::Sender<TrackerCmd>) -> usize {
-        let (respond, ack) = oneshot::channel();
-        tx.send(TrackerCmd::QueryFailureCount { respond })
-            .await
-            .unwrap();
-        ack.await.unwrap()
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn continuous_failures_must_not_starve_stale_failure_sweep() {
-        let mut jail = test_jail_config();
-        jail.max_retry = 2;
-        jail.find_time = 1;
-        let jails = HashMap::from([("sshd".to_string(), jail)]);
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(crate::track::persist::open_ban_store(dir.path().into()).unwrap());
-        let (failure_tx, failure_rx) = mpsc::channel(8);
-        let (cmd_tx, cmd_rx) = mpsc::channel(8);
-        let (executor_tx, _executor_rx) = mpsc::channel(8);
-        let cancel = CancellationToken::new();
-        let handle = tokio::spawn(run(
-            test_global_config(),
-            jails,
-            failure_rx,
-            cmd_rx,
-            executor_tx,
-            false,
-            vec![],
-            HashMap::new(),
-            store,
-            None,
-            cancel.clone(),
-        ));
-        let stale = chrono::Utc::now().timestamp() - 120;
-        for octet in 1..=65u8 {
-            failure_tx
-                .send(Failure {
-                    ip: Ipv4Addr::new(198, 51, 100, octet).into(),
-                    jail_id: "sshd".to_string(),
-                    timestamp: stale,
-                })
-                .await
-                .unwrap();
-            // Let the tracker consume this event before moving time forward.
-            tokio::task::yield_now().await;
-            let _ = failure_count(&cmd_tx).await;
-            tokio::time::advance(std::time::Duration::from_secs(1)).await;
-            tokio::task::yield_now().await;
-        }
-        let retained = failure_count(&cmd_tx).await;
-        cancel.cancel();
-        handle.await.unwrap();
-        println!(
-            "continuous load: 65 injected stale unique IPs; after 65 virtual seconds: {retained} retained buffers"
-        );
-        // A periodic 60s sweep may retain only the few post-sweep entries.
-        assert!(
-            retained <= 6,
-            "periodic sweep starved: {retained} stale unique-IP failure buffers remain after 65s of continuous input"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn idle_tracker_prunes_the_same_stale_failure() {
-        let mut jail = test_jail_config();
-        jail.max_retry = 2;
-        jail.find_time = 1;
-        let jails = HashMap::from([("sshd".to_string(), jail)]);
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(crate::track::persist::open_ban_store(dir.path().into()).unwrap());
-        let (failure_tx, failure_rx) = mpsc::channel(8);
-        let (cmd_tx, cmd_rx) = mpsc::channel(8);
-        let (executor_tx, _executor_rx) = mpsc::channel(8);
-        let cancel = CancellationToken::new();
-        let handle = tokio::spawn(run(
-            test_global_config(),
-            jails,
-            failure_rx,
-            cmd_rx,
-            executor_tx,
-            false,
-            vec![],
-            HashMap::new(),
-            store,
-            None,
-            cancel.clone(),
-        ));
-        failure_tx
-            .send(Failure {
-                ip: Ipv4Addr::new(198, 51, 100, 1).into(),
-                jail_id: "sshd".to_string(),
-                timestamp: chrono::Utc::now().timestamp() - 120,
-            })
-            .await
-            .unwrap();
-        tokio::task::yield_now().await;
-        assert_eq!(failure_count(&cmd_tx).await, 1);
-        tokio::time::advance(std::time::Duration::from_secs(61)).await;
-        tokio::task::yield_now().await;
-        let retained = failure_count(&cmd_tx).await;
-        cancel.cancel();
-        handle.await.unwrap();
-        assert_eq!(retained, 0, "idle control must prune the stale entry");
-    }
-}
+#[allow(clippy::panic, clippy::unwrap_used)]
+#[path = "run_sweep_test.rs"]
+mod run_sweep_test;
