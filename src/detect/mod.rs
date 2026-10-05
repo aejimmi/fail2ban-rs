@@ -26,6 +26,8 @@ mod extract;
 mod identity;
 /// Journal JSON entry decoding (internal to the journal watcher).
 mod journal_entry;
+/// Bounded `journalctl` JSON line reader (internal to the journal watcher).
+mod journal_line;
 /// `journalctl` stderr/exit-status capture (internal to the journal watcher).
 mod journal_proc;
 /// Blocking log-file read loop (internal to the watcher).

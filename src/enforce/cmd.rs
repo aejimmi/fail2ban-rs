@@ -84,30 +84,7 @@ where
 {
     let mut child = spawn_in_group(program, label, args)?;
     let pgid = child.id();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let result = tokio::time::timeout(limit, async {
-        let (stdout, stderr) = tokio::try_join!(
-            read_bounded(
-                stdout,
-                if capture_stdout { MAX_STDOUT_BYTES } else { 0 },
-                !capture_stdout,
-                label,
-                "stdout"
-            ),
-            read_bounded(stderr, MAX_STDERR_BYTES, true, label, "stderr"),
-        )?;
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| Error::firewall(format!("{label} command failed: {e}")))?;
-        Ok(Output {
-            status,
-            stdout,
-            stderr,
-        })
-    })
-    .await;
+    let result = tokio::time::timeout(limit, collect(&mut child, label, capture_stdout)).await;
     let error = match result {
         Ok(Ok(out)) => return Ok(out),
         Ok(Err(error)) => error,
@@ -116,14 +93,56 @@ where
             limit.as_secs_f64()
         )),
     };
-    kill_group(pgid, label);
-    // Also request a direct kill if signalling the group failed, and reap the
-    // leader instead of leaving a zombie after a limit or timeout.
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+    abort_and_reap(&mut child, pgid, label).await;
     Err(error)
 }
 
+/// Drain stdout and stderr concurrently, then reap the leader. The leader is
+/// only waited on once both pipes hit EOF, so it stays unreaped (and its
+/// process group addressable) for as long as any pipe is still open.
+async fn collect(
+    child: &mut tokio::process::Child,
+    label: &str,
+    capture_stdout: bool,
+) -> Result<Output> {
+    let stdout_max = if capture_stdout { MAX_STDOUT_BYTES } else { 0 };
+    let (stdout, stderr) = tokio::try_join!(
+        read_bounded(
+            child.stdout.take(),
+            stdout_max,
+            !capture_stdout,
+            label,
+            "stdout"
+        ),
+        read_bounded(child.stderr.take(), MAX_STDERR_BYTES, true, label, "stderr"),
+    )?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| Error::firewall(format!("{label} command failed: {e}")))?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// Kill a timed-out or over-limit command's process group while the leader is
+/// still unreaped, then reap the leader so it never lingers as a zombie.
+async fn abort_and_reap(child: &mut tokio::process::Child, pgid: Option<u32>, label: &str) {
+    kill_group(pgid, label);
+    // Also request a direct kill in case signalling the group failed.
+    if let Err(e) = child.start_kill() {
+        debug!(%label, error = %e, "direct kill of aborted command failed");
+    }
+    if let Err(e) = child.wait().await {
+        warn!(%label, error = %e, "failed to reap aborted command");
+    }
+}
+
+/// Read `pipe` to EOF, keeping at most `max_bytes`. Past the bound, either
+/// keep a truncated prefix ending in a marker (`truncate`) or fail with
+/// [`Error::FirewallOutputLimit`].
 async fn read_bounded<R: AsyncRead + Unpin>(
     pipe: Option<R>,
     max_bytes: usize,
@@ -142,27 +161,44 @@ async fn read_bounded<R: AsyncRead + Unpin>(
             .read(&mut *chunk)
             .await
             .map_err(|e| Error::firewall(format!("{label} {stream} read failed: {e}")))?;
-        if n == 0 {
+        let Some(data) = chunk.get(..n).filter(|d| !d.is_empty()) else {
             break;
-        }
-        let remaining = max_bytes.saturating_sub(bytes.len());
-        if n > remaining {
+        };
+        if !append_bounded(&mut bytes, data, max_bytes) {
             if !truncate {
-                return Err(Error::FirewallOutputLimit {
-                    label: label.to_string(),
-                    stream,
-                    max_bytes,
-                });
+                return Err(output_limit(label, stream, max_bytes));
             }
             truncated = true;
         }
-        bytes.extend_from_slice(chunk.get(..n.min(remaining)).unwrap_or_default());
     }
     if truncated {
-        bytes.truncate(max_bytes.saturating_sub(TRUNCATED.len()));
-        bytes.extend_from_slice(TRUNCATED.get(..max_bytes).unwrap_or(TRUNCATED));
+        mark_truncated(&mut bytes, max_bytes);
     }
     Ok(bytes)
+}
+
+/// Append as much of `data` as fits under `max_bytes`. Returns `false` when
+/// some of `data` did not fit.
+fn append_bounded(bytes: &mut Vec<u8>, data: &[u8], max_bytes: usize) -> bool {
+    let remaining = max_bytes.saturating_sub(bytes.len());
+    bytes.extend_from_slice(data.get(..data.len().min(remaining)).unwrap_or_default());
+    data.len() <= remaining
+}
+
+/// Replace the tail of an overflowed buffer with the truncation marker,
+/// keeping the result within `max_bytes`.
+fn mark_truncated(bytes: &mut Vec<u8>, max_bytes: usize) {
+    bytes.truncate(max_bytes.saturating_sub(TRUNCATED.len()));
+    bytes.extend_from_slice(TRUNCATED.get(..max_bytes).unwrap_or(TRUNCATED));
+}
+
+/// Error for a stream that exceeded its non-truncating output bound.
+fn output_limit(label: &str, stream: &'static str, max_bytes: usize) -> Error {
+    Error::FirewallOutputLimit {
+        label: label.to_string(),
+        stream,
+        max_bytes,
+    }
 }
 
 /// Spawn `program args...` as the leader of a new process group, with
