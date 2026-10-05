@@ -1,14 +1,15 @@
-system: Apple M4 Pro, macOS 26.1, rustc 1.94.0
-commit: 8d96853
-date:   2026-03-26
+system: Apple M4 Pro, macOS 26.5, rustc 1.94.0
+commit: 3a9e90e
+date:   2026-10-05
 
-try_match/hit_invalid_user          276 ns
-try_match/hit_conn_closed_auth      363 ns
-try_match/miss_cron                  58 ns
-try_match/miss_near_invalid_user     32 ns
-try_match/miss_near_conn_reset       21 ns
-nginx_host_at_start/hit_url_ip      131 ns
-nginx_host_at_start/hit_plain       109 ns
-nginx_host_at_start/miss_status      73 ns
-date_parse/iso8601                  6.6 ns
-pipeline_mixed_10_lines            1.51 µs
+try_match/hit_invalid_user         299 ns
+try_match/hit_conn_closed_auth     368 ns
+try_match/miss_cron               59.6 ns
+try_match/miss_near_invalid_user  32.4 ns
+try_match/miss_near_conn_reset    21.2 ns
+nginx_host_at_start/hit_url_ip     137 ns
+nginx_host_at_start/hit_plain      114 ns
+nginx_host_at_start/miss_status   66.4 ns
+date_parse/iso8601                10.8 ns
+date_parse/syslog                 43.4 ns
+pipeline_mixed_10_lines           1.65 µs

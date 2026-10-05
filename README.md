@@ -1,4 +1,4 @@
-A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **24x faster matching · 9x faster startup · single ~5 MB binary**
+A ground-up Rust rewrite of [fail2ban](https://github.com/fail2ban/fail2ban) — **50x faster matching · 9x faster startup · single ~5 MB binary**
 
 Used in production at [tell.rs](https://tell.rs) to protect application endpoints.
 
@@ -6,7 +6,7 @@ fail2ban is a 20-year-old Python codebase that works, but requires a Python runt
 
 fail2ban-rs is one static binary:
 
-- **24x faster matching** — 337 ns per log line against 8,123 ns for fail2ban, on the same log with the same patterns
+- **50x faster matching** — 158 ns per log line against 8,123 ns for fail2ban, on the same log with the same patterns
 - **9x faster startup** — 4 ms against 38 ms
 - **~5 MB binary, ~9 MB idle memory** — no Python, no runtime, no interpreter
 - **Nothing to maintain** — bans persist in an embedded write-ahead log and survive restarts and crashes; no SQLite database growing on disk
@@ -167,7 +167,7 @@ Measured against fail2ban 1.1.0 on the same machine (MacBook M4 Pro), with the s
 
 | | fail2ban-rs | fail2ban | |
 |---|---|---|---|
-| Matching, per log line | 337 ns | 8,123 ns | **24x** |
+| Matching, per log line | 158 ns | 8,123 ns | **50x** |
 | Startup | 4 ms | 38 ms | **9x** |
 
 Matching is timed over 200,000 lines of [openssh_2k.log](sample/openssh_2k.log) from [logpai/loghub](https://github.com/logpai/loghub), with startup time subtracted. Startup is `--version` of each tool. Reproduce it:

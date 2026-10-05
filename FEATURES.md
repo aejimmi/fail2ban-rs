@@ -5,7 +5,7 @@
 - Two-phase log matching — Aho-Corasick pre-filter rejects non-matching lines in nanoseconds, then only tries relevant regexes.
 - Positional IP extraction — identifies the correct host IP by its position in the pattern, even when other IPs appear in URLs or log fields.
 - Ignore regex — lines matching ignoreregex are suppressed even when a failregex matches.
-- Four timestamp formats — syslog, ISO 8601 (zero-alloc byte scanner), unix epoch, and common log format.
+- Four timestamp formats — syslog and ISO 8601 (zero-alloc byte scanners), unix epoch, and common log format.
 - Timezone-aware parsing — numeric `+HHMM`/`-HHMM` offsets are normalized to UTC; ambiguous or skipped local times (DST transitions) resolve deterministically.
 
 ## Banning
@@ -26,6 +26,7 @@
 - Tunable ipset capacity and chain — maxelem sizes the set, chain places the drop rule outside INPUT for Docker hosts.
 - Script backend — user-defined ban and unban shell commands for custom firewalls.
 - Absolute path resolution — firewall commands resolved to full paths to prevent PATH hijack.
+- Bounded command output — output from firewall commands and ban scripts is capped in memory, so a noisy script cannot balloon the daemon.
 - Reconcile — every 5 minutes active bans are checked against the firewall and missing ones re-applied, rotating through the whole list with one listing per jail rather than one command per ban.
 - Command timeout — every firewall command is killed after 30 seconds, including background processes started by ban scripts, so a hung tool cannot stall the daemon; iptables waits for the xtables lock rather than failing when another tool holds it.
 

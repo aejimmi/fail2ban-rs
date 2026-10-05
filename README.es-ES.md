@@ -1,6 +1,6 @@
 
 
-Una reescritura completa en Rust de [fail2ban](https://github.com/fail2ban/fail2ban) — **coincidencias 24x más rápidas · inicio 9x más rápido · binario único de ~5 MB**
+Una reescritura completa en Rust de [fail2ban](https://github.com/fail2ban/fail2ban) — **coincidencias 50x más rápidas · inicio 9x más rápido · binario único de ~5 MB**
 
 Usado en producción en [tell.rs](https://tell.rs) para proteger los puntos finales de la aplicación.
 
@@ -8,7 +8,7 @@ fail2ban es una base de código en Python de 20 años que funciona, pero requier
 
 fail2ban-rs es un único binario estático:
 
-- **Coincidencias 24x más rápidas** — 337 ns por línea de registro frente a 8.123 ns de fail2ban, con el mismo registro y los mismos patrones
+- **Coincidencias 50x más rápidas** — 158 ns por línea de registro frente a 8.123 ns de fail2ban, con el mismo registro y los mismos patrones
 - **Inicio 9x más rápido** — 4 ms frente a 38 ms
 - **Binario de ~5 MB, ~9 MB de memoria en reposo** — sin Python, sin runtime, sin intérprete
 - **Nada que mantener** — los bloqueos persisten en un registro de escritura anticipada integrado y sobreviven a reinicios y caídas; sin base de datos SQLite creciendo en disco
@@ -169,7 +169,7 @@ Medido contra fail2ban 1.1.0 en la misma máquina (MacBook M4 Pro), con el mismo
 
 | | fail2ban-rs | fail2ban | |
 |---|---|---|---|
-| Coincidencias, por línea de registro | 337 ns | 8.123 ns | **24x** |
+| Coincidencias, por línea de registro | 158 ns | 8.123 ns | **50x** |
 | Inicio | 4 ms | 38 ms | **9x** |
 
 Las coincidencias se miden sobre 200.000 líneas de [openssh_2k.log](sample/openssh_2k.log) de [logpai/loghub](https://github.com/logpai/loghub), restando el tiempo de inicio. El inicio es `--version` de cada herramienta. Reprodúcelo:

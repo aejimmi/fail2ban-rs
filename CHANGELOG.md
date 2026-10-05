@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.5.4
+
+New:
+- logs: syslog-format timestamps are parsed about 12x faster, roughly halving the time spent per line on a typical auth.log
+- logs: lines are decoded and split with SIMD, making a full dry run about 14% faster
+
+Fix:
+- logs: journal lines with a multi-byte character split across a read boundary are no longer corrupted
+- banning: expired failure records and stale escalation counters are cleaned up every minute even under constant traffic, instead of piling up in memory
+- firewall: output from firewall commands and ban scripts is memory-bounded, so a noisy script can no longer balloon the daemon; an oversized firewall listing skips that reconcile pass instead of being half-read
+- docs: performance figures are measured against fail2ban itself, and manual ban and unban examples use the required --jail flag
+
+## v1.5.3
+
+Fix:
+- banning: a ban that cannot be saved to disk is no longer applied to the firewall or counted, and a manual ban reports the error
+- banning: unbans report success only after the firewall removed the address; a failed unban keeps its record and is retried after a minute instead of leaving the address blocked
+- reload: success is reported only once the new configuration is in effect, and the daemon exits for a service restart if its ban pipeline has stopped
+- reload: queued failures are delivered before log watchers restart, so none are skipped under load
+
 ## v1.5.2
 
 New:
