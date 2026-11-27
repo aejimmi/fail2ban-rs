@@ -2,12 +2,12 @@
 //! decay, and reconcile requests.
 
 use std::collections::{HashMap, VecDeque};
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use etchdb::{Store, WalBackend};
 use tracing::{debug, info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::enforce::FirewallCmd;
 use crate::track::ban_calc::JailParams;
 use crate::track::persist::BanState;
@@ -94,7 +94,7 @@ pub(super) fn prune_decayed_ban_counts(
     if decay <= 0 {
         return;
     }
-    let stale: Vec<IpAddr> = store
+    let stale: Vec<BanTarget> = store
         .read()
         .ban_counts
         .iter()

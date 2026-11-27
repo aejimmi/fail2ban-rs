@@ -2,7 +2,6 @@
 //! hand the survivors to the executor (restore) and tracker (seed).
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +9,7 @@ use std::time::Duration;
 use etchdb::{FlushPolicy, Store, WalBackend};
 use tracing::{info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::track::persist::{BanCount, BanState};
 use crate::track::state::BanRecord;
 
@@ -25,7 +25,7 @@ pub(super) struct Restored {
     /// Unexpired bans to re-apply.
     pub(super) bans: Vec<BanRecord>,
     /// Per-IP escalation counts.
-    pub(super) ban_counts: HashMap<IpAddr, BanCount>,
+    pub(super) ban_counts: HashMap<BanTarget, BanCount>,
 }
 
 /// Open the ban store (migrating legacy or incompatible state aside) and read
@@ -46,7 +46,7 @@ pub(super) async fn open_state(state_dir: &Path) -> crate::error::Result<Restore
 }
 
 /// Split persisted bans into live ones (returned) and expired ones (purged).
-fn load_restored(store: &BanStore) -> (Vec<BanRecord>, HashMap<IpAddr, BanCount>) {
+fn load_restored(store: &BanStore) -> (Vec<BanRecord>, HashMap<BanTarget, BanCount>) {
     let now = chrono::Utc::now().timestamp();
     let (expired, bans, counts) = {
         let state = store.read();
@@ -78,7 +78,7 @@ fn load_restored(store: &BanStore) -> (Vec<BanRecord>, HashMap<IpAddr, BanCount>
 }
 
 /// Delete expired ban keys from the store in one transaction.
-fn purge_expired(store: &BanStore, keys: &[(IpAddr, String)]) {
+fn purge_expired(store: &BanStore, keys: &[(BanTarget, String)]) {
     if keys.is_empty() {
         return;
     }

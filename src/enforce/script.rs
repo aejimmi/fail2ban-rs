@@ -3,7 +3,7 @@
 //! Runs user-defined ban/unban commands with `<IP>` and `<JAIL>` tag
 //! substitution.
 
-use std::net::IpAddr;
+use crate::ban_target::BanTarget;
 
 use crate::enforce::{FirewallBackend, cmd};
 use crate::error::{Error, Result};
@@ -40,7 +40,7 @@ impl ScriptBackend {
         Ok(())
     }
 
-    fn substitute(template: &str, ip: &IpAddr, jail: &str) -> String {
+    fn substitute(template: &str, ip: &BanTarget, jail: &str) -> String {
         template
             .replace("<IP>", &ip.to_string())
             .replace("<JAIL>", jail)
@@ -48,7 +48,7 @@ impl ScriptBackend {
 
     /// Run a command via `sh -c` under the shared command timeout, so a
     /// hung user script is killed instead of freezing the executor. This
-    /// uses shell execution, but is safe because `ip` is a validated `IpAddr`
+    /// uses shell execution, but is safe because `ip` is a validated `BanTarget`
     /// (cannot contain shell metacharacters) and `jail` is validated by
     /// [`Self::validate_jail_name`] before substitution.
     async fn run_cmd(cmd_line: &str) -> Result<()> {
@@ -66,19 +66,19 @@ impl FirewallBackend for ScriptBackend {
         Ok(())
     }
 
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         Self::validate_jail_name(jail)?;
         let cmd = Self::substitute(&self.ban_cmd, ip, jail);
         Self::run_cmd(&cmd).await
     }
 
-    async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn unban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         Self::validate_jail_name(jail)?;
         let cmd = Self::substitute(&self.unban_cmd, ip, jail);
         Self::run_cmd(&cmd).await
     }
 
-    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
+    async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> Result<bool> {
         // Script backend can't check — always return false. `can_verify`
         // reports this so reconcile skips the backend instead of re-running
         // the ban script for every active ban each tick.

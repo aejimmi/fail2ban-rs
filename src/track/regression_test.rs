@@ -41,14 +41,14 @@ async fn test_reban_requires_full_threshold_after_unban() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(21, 21, 21, 21));
+    let ip = BanTarget::V4(Ipv4Addr::new(21, 21, 21, 21));
     let now = chrono::Utc::now().timestamp();
 
     // First ban: 3 failures reach the threshold.
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -88,7 +88,7 @@ async fn test_reban_requires_full_threshold_after_unban() {
     for i in 0..2 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + 10 + i,
             })
@@ -105,7 +105,7 @@ async fn test_reban_requires_full_threshold_after_unban() {
     // The third fresh failure reaches the threshold again → re-ban.
     failure_tx
         .send(Failure {
-            ip,
+            ip: ip.addr(),
             jail_id: "sshd".to_string(),
             timestamp: now + 12,
         })
@@ -151,7 +151,7 @@ async fn test_reban_keeps_new_expiry_no_premature_unban() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(22, 22, 22, 22));
+    let ip = BanTarget::V4(Ipv4Addr::new(22, 22, 22, 22));
 
     // Short ban, then immediate unban.
     manual_ban(&cmd_tx, &mut executor_rx, ip, 2).await;
@@ -205,14 +205,14 @@ async fn test_ban_count_escalates_across_bans() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(23, 23, 23, 23));
+    let ip = BanTarget::V4(Ipv4Addr::new(23, 23, 23, 23));
     let now = chrono::Utc::now().timestamp();
 
     // Cycle 1: count 0 → 10 * 2^0 = 10s.
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -227,7 +227,7 @@ async fn test_ban_count_escalates_across_bans() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + 100 + i,
             })
@@ -271,7 +271,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(24, 24, 24, 24));
+    let ip = BanTarget::V4(Ipv4Addr::new(24, 24, 24, 24));
     let now = chrono::Utc::now().timestamp();
 
     // First ban: 3 failures reach the threshold; the test plays the role of
@@ -279,7 +279,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -328,7 +328,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + 100 + i,
             })
@@ -351,7 +351,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
 async fn test_ban_apply_failed_stale_notice_keeps_current_ban() {
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), test_jail_config());
-    let ip = IpAddr::V4(Ipv4Addr::new(25, 25, 25, 25));
+    let ip = BanTarget::V4(Ipv4Addr::new(25, 25, 25, 25));
     let now = chrono::Utc::now().timestamp();
     let current = BanRecord {
         ip,

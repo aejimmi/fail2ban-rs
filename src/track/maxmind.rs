@@ -6,11 +6,13 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+
 use std::path::Path;
 
 use maxminddb::geoip2;
 use tracing::{error, info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::config::{GlobalConfig, JailConfig, MaxmindField};
 use crate::detect::watcher::Failure;
 
@@ -174,13 +176,14 @@ pub fn load_db(path: &Path, label: &str) -> Option<maxminddb::Reader<maxminddb::
 /// Log a ban event, including MaxMind fields only when enrichment data exists.
 pub fn log_ban_event(
     failure: &Failure,
+    target: BanTarget,
     ban_time: i64,
     ban_count: u32,
     enrichment: &MaxmindEnrichment,
 ) {
     if enrichment.has_data() {
         info!(
-            ip = %failure.ip,
+            ip = %target,
             jail = %failure.jail_id,
             maxmind_asn = enrichment.asn,
             maxmind_country = enrichment.country,
@@ -192,7 +195,7 @@ pub fn log_ban_event(
         );
     } else {
         info!(
-            ip = %failure.ip,
+            ip = %target,
             jail = %failure.jail_id,
             ban_time,
             ban_count,

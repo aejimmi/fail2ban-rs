@@ -12,15 +12,15 @@ use crate::track::execute::record_ban;
 use crate::track::failure::handle_failure;
 use crate::track::fault_support::{FaultStore, Rig, rig};
 
-const IP: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+const IP: BanTarget = BanTarget::V4(Ipv4Addr::new(203, 0, 113, 7));
 
-fn key() -> (IpAddr, String) {
+fn key() -> (BanTarget, String) {
     (IP, "sshd".to_string())
 }
 
 fn failure(ts: i64) -> Failure {
     Failure {
-        ip: IP,
+        ip: IP.addr(),
         jail_id: "sshd".to_string(),
         timestamp: ts,
     }

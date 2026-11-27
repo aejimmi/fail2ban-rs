@@ -37,14 +37,14 @@ async fn test_bans_after_threshold() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+    let ip = BanTarget::V4(Ipv4Addr::new(1, 2, 3, 4));
     let now = chrono::Utc::now().timestamp();
 
     // Send 3 failures (= max_retry).
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -105,14 +105,14 @@ async fn test_reban_on_restart_false_still_bans_new_offenders() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
+    let ip = BanTarget::V4(Ipv4Addr::new(9, 9, 9, 9));
     let now = chrono::Utc::now().timestamp();
 
     // Send 3 failures (= max_retry) — should still ban despite reban_on_restart=false.
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -169,14 +169,14 @@ async fn test_no_ban_below_threshold() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8));
+    let ip = BanTarget::V4(Ipv4Addr::new(5, 6, 7, 8));
     let now = chrono::Utc::now().timestamp();
 
     // Only 2 failures (< max_retry of 3).
     for i in 0..2 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -226,14 +226,14 @@ async fn test_no_ban_outside_find_time() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(9, 10, 11, 12));
+    let ip = BanTarget::V4(Ipv4Addr::new(9, 10, 11, 12));
     let now = chrono::Utc::now().timestamp();
 
     // 3 failures spread over 100 seconds (> find_time of 10).
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + (i * 50),
             })
@@ -279,14 +279,14 @@ async fn test_already_banned_ip_ignored() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(20, 20, 20, 20));
+    let ip = BanTarget::V4(Ipv4Addr::new(20, 20, 20, 20));
     let now = chrono::Utc::now().timestamp();
 
     // Trigger first ban (3 failures).
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -305,7 +305,7 @@ async fn test_already_banned_ip_ignored() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + 10 + i,
             })
@@ -359,7 +359,7 @@ async fn test_unknown_jail_failure_ignored() {
     // Send failure for a jail that doesn't exist.
     failure_tx
         .send(Failure {
-            ip: IpAddr::V4(Ipv4Addr::new(30, 30, 30, 30)),
+            ip: BanTarget::V4(Ipv4Addr::new(30, 30, 30, 30)).addr(),
             jail_id: "nonexistent".to_string(),
             timestamp: chrono::Utc::now().timestamp(),
         })
@@ -411,7 +411,7 @@ async fn test_automatic_ban_executor_closed_rolls_back() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip: IpAddr::V4(Ipv4Addr::new(31, 31, 31, 31)),
+                ip: BanTarget::V4(Ipv4Addr::new(31, 31, 31, 31)).addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -438,6 +438,70 @@ async fn test_automatic_ban_executor_closed_rolls_back() {
     );
     assert_eq!(stats.total_bans, 0);
 
+    cancel.cancel();
+    handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_ipv6_bans_group_failures_by_prefix_without_covering_allowlisted_hosts() {
+    use std::time::Duration;
+
+    let mut jail = test_jail_config();
+    jail.ipv6_prefix_bans = true;
+    jail.ignoreip = vec!["2001:db8:1::99".to_string()];
+    let jails = HashMap::from([("sshd".to_string(), jail)]);
+    let (failure_tx, failure_rx) = mpsc::channel(16);
+    let (executor_tx, mut executor_rx) = mpsc::channel(16);
+    let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+    let cancel = CancellationToken::new();
+    let handle = tokio::spawn(crate::track::run(
+        test_global_config(),
+        jails,
+        failure_rx,
+        cmd_rx,
+        executor_tx,
+        false,
+        vec![],
+        HashMap::new(),
+        test_store(),
+        None,
+        cancel.clone(),
+    ));
+
+    let timestamp = chrono::Utc::now().timestamp();
+    for address in [
+        "2001:db8:1::1",
+        "2001:db8:1::2",
+        "2001:db8:1::3",
+        "2001:db8:2::1",
+        "2001:db8:2::2",
+        "2001:db8:2::3",
+        "2001:db8:3::1",
+        "2001:db8:3::1",
+        "2001:db8:3::1",
+        "2001:db8:1::1",
+        "2001:db8:1::1",
+    ] {
+        failure_tx
+            .send(Failure {
+                ip: address.parse().unwrap(),
+                jail_id: "sshd".to_string(),
+                timestamp,
+            })
+            .await
+            .unwrap();
+    }
+
+    for expected in ["2001:db8:2::/64", "2001:db8:3::/64", "2001:db8:1::1"] {
+        let command = tokio::time::timeout(Duration::from_secs(5), executor_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let FirewallCmd::Ban { ip, .. } = command else {
+            panic!("expected Ban command, got {command:?}");
+        };
+        assert_eq!(ip.to_string(), expected);
+    }
     cancel.cancel();
     handle.await.unwrap();
 }

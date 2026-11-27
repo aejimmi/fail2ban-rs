@@ -2,6 +2,8 @@
 
 use std::net::IpAddr;
 
+use crate::ban_target::BanTarget;
+
 use crate::config::Config;
 use crate::detect::matcher::JailMatcher;
 use crate::duration::parse_duration;
@@ -203,11 +205,12 @@ fn port_validation_accepts_valid() {
 
 #[test]
 fn script_ip_cannot_inject_shell() {
-    // IpAddr::to_string() is safe — verify it never produces shell metacharacters.
-    let ips: Vec<IpAddr> = vec![
+    // BanTarget::to_string() is safe — verify it never produces shell metacharacters.
+    let ips: Vec<BanTarget> = vec![
         "127.0.0.1".parse().unwrap(),
         "::1".parse().unwrap(),
         "255.255.255.255".parse().unwrap(),
+        "2001:db8::1234/64".parse().unwrap(),
         "2001:db8::1".parse().unwrap(),
         "fe80::1".parse().unwrap(),
     ];

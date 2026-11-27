@@ -6,10 +6,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use ipnet::IpNet;
 
+use crate::ban_target::BanTarget;
 use crate::error::Result;
 
 /// Ignore list with CIDR networks and optional self-detection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IgnoreList {
     networks: Vec<IpNet>,
 }
@@ -32,6 +33,17 @@ impl IgnoreList {
     /// Check if an IP should be ignored (never banned).
     pub fn is_ignored(&self, ip: &IpAddr) -> bool {
         self.networks.iter().any(|net| net.contains(ip))
+    }
+
+    /// Group IPv6 hosts only when their /64 cannot cover an ignored address.
+    pub fn ban_target(&self, ip: IpAddr) -> BanTarget {
+        let Some(prefix) = BanTarget::ipv6_prefix(ip) else {
+            return ip.into();
+        };
+        let overlaps = self.networks.iter().any(|net| {
+            net.contains(&prefix.addr()) || BanTarget::ipv6_prefix(net.network()) == Some(prefix)
+        });
+        if overlaps { ip.into() } else { prefix }
     }
 
     /// Number of networks in the list.

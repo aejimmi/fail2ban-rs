@@ -1,10 +1,11 @@
 use super::*;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
+use crate::ban_target::BanTarget;
 use crate::enforce::test_support::{FailingInitMockBackend, MockBackend};
 
 type Calls = Arc<Mutex<Vec<String>>>;
@@ -15,7 +16,7 @@ struct ScriptedBackend {
     calls: Calls,
     fail_init: bool,
     fail_teardown: bool,
-    fail_ban_ip: Option<IpAddr>,
+    fail_ban_ip: Option<BanTarget>,
 }
 
 impl ScriptedBackend {
@@ -40,17 +41,17 @@ impl FirewallBackend for ScriptedBackend {
         }
         Ok(())
     }
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.record(format!("ban:{ip}:{jail}"));
         if self.fail_ban_ip == Some(*ip) {
             return Err(Error::firewall("scripted ban failure"));
         }
         Ok(())
     }
-    async fn unban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+    async fn unban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
+    async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> Result<bool> {
         Ok(false)
     }
     fn name(&self) -> &'static str {
@@ -60,7 +61,7 @@ impl FirewallBackend for ScriptedBackend {
 
 fn ban(last: u8) -> BanRecord {
     BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(8, 8, 8, last)),
+        ip: BanTarget::V4(Ipv4Addr::new(8, 8, 8, last)),
         jail_id: "sshd".to_string(),
         banned_at: 1000,
         expires_at: None,
@@ -88,8 +89,8 @@ fn backends_with(backend: impl FirewallBackend + 'static) -> Backends {
 async fn ban_via_executor(backends: &Backends, last: u8) -> Result<()> {
     let (tracker_tx, _tracker_rx) = mpsc::channel(1);
     let (done_tx, done_rx) = oneshot::channel();
-    let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, last));
-    let ban = super::super::BanTarget {
+    let ip = BanTarget::V4(Ipv4Addr::new(9, 9, 9, last));
+    let ban = super::super::BanApplication {
         ip,
         jail_id: "sshd",
         banned_at: 0,
@@ -358,13 +359,13 @@ impl FirewallBackend for RulesBackend {
     async fn teardown(&self, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn ban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+    async fn ban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn unban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+    async fn unban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
+    async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> Result<bool> {
         Ok(false)
     }
     fn name(&self) -> &'static str {

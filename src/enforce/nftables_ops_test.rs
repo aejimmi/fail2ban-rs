@@ -27,7 +27,7 @@ const V6_LISTING: &str = "table inet fail2ban-rs {
 }
 ";
 
-fn ip(s: &str) -> IpAddr {
+fn ip(s: &str) -> BanTarget {
     s.parse().unwrap()
 }
 
@@ -36,14 +36,14 @@ fn ip(s: &str) -> IpAddr {
 #[test]
 fn test_parse_set_elements_finds_every_element_in_a_multi_element_listing() {
     let got = parse_set_elements(V4_LISTING);
-    let want: HashSet<IpAddr> = ["1.2.3.4", "5.6.7.8", "9.9.9.9"].map(ip).into();
+    let want: HashSet<BanTarget> = ["1.2.3.4", "5.6.7.8", "9.9.9.9"].map(ip).into();
     assert_eq!(got, want);
 }
 
 #[test]
 fn test_parse_set_elements_handles_ipv6() {
     let got = parse_set_elements(V6_LISTING);
-    let want: HashSet<IpAddr> = ["2001:db8::1", "2001:db8::2"].map(ip).into();
+    let want: HashSet<BanTarget> = ["2001:db8::1", "2001:db8::2"].map(ip).into();
     assert_eq!(got, want);
 }
 
@@ -231,8 +231,8 @@ async fn test_is_banned_errors_when_nft_binary_is_missing() {
 // --- snapshot --------------------------------------------------------------
 
 #[tokio::test]
-async fn test_snapshot_lists_both_family_sets_once() {
-    let listing = format!("{V4_LISTING}{V6_LISTING}");
+async fn test_snapshot_lists_all_sets_once() {
+    let listing = format!("{V4_LISTING}{V6_LISTING} elements = {{ 2001:db8::/64 timeout 5m }}");
     let fake = fake_nft(0, &listing);
     let snap = fake
         .backend
@@ -240,12 +240,14 @@ async fn test_snapshot_lists_both_family_sets_once() {
         .await
         .expect("snapshot")
         .expect("nftables supports snapshots");
-    assert_eq!(snap.len(), 5, "got: {snap:?}");
+    assert_eq!(snap.len(), 6, "got: {snap:?}");
     assert!(snap.contains(&ip("2001:db8::2")));
     let calls = fake.calls();
-    assert_eq!(calls.len(), 2);
+    assert!(snap.contains(&ip("2001:db8::/64")));
+    assert_eq!(calls.len(), 3);
     assert_eq!(calls[0][4], "f2b-sshd");
     assert_eq!(calls[1][4], "f2b-sshd-v6");
+    assert_eq!(calls[2][4], "f2b6-sshd");
 }
 
 #[tokio::test]

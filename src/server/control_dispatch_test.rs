@@ -1,11 +1,11 @@
 use super::*;
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::ban_target::BanTarget;
 use crate::server::watchers::Watchers;
 
 use crate::enforce::{FirewallBackend, FirewallCmd};
@@ -49,15 +49,15 @@ impl FirewallBackend for FailingBanBackend {
         Ok(())
     }
 
-    async fn ban(&self, _ip: &IpAddr, _jail: &str) -> crate::error::Result<()> {
+    async fn ban(&self, _ip: &BanTarget, _jail: &str) -> crate::error::Result<()> {
         Err(crate::error::Error::firewall("mock ban failure"))
     }
 
-    async fn unban(&self, _ip: &IpAddr, _jail: &str) -> crate::error::Result<()> {
+    async fn unban(&self, _ip: &BanTarget, _jail: &str) -> crate::error::Result<()> {
         Ok(())
     }
 
-    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> crate::error::Result<bool> {
+    async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> crate::error::Result<bool> {
         Ok(false)
     }
 
@@ -172,7 +172,7 @@ async fn test_control_request_ban_and_unban_round_trip_through_real_tracker() {
         logger: None,
     };
 
-    let ip: IpAddr = "203.0.113.42".parse().unwrap();
+    let ip: BanTarget = "203.0.113.42".parse().unwrap();
 
     // Stats before any ban: zero active bans.
     match handle_control_request(Request::Stats, &harness.tracker_cmd_tx, &mut ctx).await {

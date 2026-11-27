@@ -1,11 +1,12 @@
 use super::*;
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use etchdb::{Replayable, Store, Transactable, WalBackend};
 use serde::{Deserialize, Serialize};
 
+use crate::ban_target::BanTarget;
 use crate::track::state::BanRecord;
 
 /// Open (or reopen) a WAL-backed store rooted at `dir`.
@@ -16,8 +17,8 @@ fn open(dir: &std::path::Path) -> Store<BanState, WalBackend<BanState>> {
 #[test]
 fn test_round_trip_preserves_bans_and_counts_across_reopen() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ipv4 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-    let ipv6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+    let ipv4 = BanTarget::V4(Ipv4Addr::new(10, 0, 0, 1));
+    let ipv6 = BanTarget::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
 
     {
         let store = open(dir.path());
@@ -95,7 +96,7 @@ fn test_round_trip_preserves_bans_and_counts_across_reopen() {
 #[test]
 fn test_delete_persists_across_reopen() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ip = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+    let ip = BanTarget::V4(Ipv4Addr::new(1, 1, 1, 1));
     let key = (ip, "sshd".to_string());
 
     {
@@ -132,7 +133,7 @@ fn test_delete_persists_across_reopen() {
 #[test]
 fn test_multiple_jails_for_same_ip_persist_independently() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ip = IpAddr::V4(Ipv4Addr::new(5, 5, 5, 5));
+    let ip = BanTarget::V4(Ipv4Addr::new(5, 5, 5, 5));
 
     {
         let store = open(dir.path());
@@ -192,8 +193,8 @@ fn test_empty_store_replays_to_default_state() {
 #[test]
 fn test_corrupt_wal_tail_drops_only_the_torn_entry() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ip_a = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 1));
-    let ip_b = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 2));
+    let ip_a = BanTarget::V4(Ipv4Addr::new(9, 9, 9, 1));
+    let ip_b = BanTarget::V4(Ipv4Addr::new(9, 9, 9, 2));
 
     {
         let store = open(dir.path());
@@ -252,7 +253,7 @@ fn test_corrupt_wal_tail_drops_only_the_torn_entry() {
 #[test]
 fn test_truncated_wal_file_does_not_error_on_open() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ip = IpAddr::V4(Ipv4Addr::new(7, 7, 7, 7));
+    let ip = BanTarget::V4(Ipv4Addr::new(7, 7, 7, 7));
 
     {
         let store = open(dir.path());
@@ -305,9 +306,9 @@ fn test_truncated_wal_file_does_not_error_on_open() {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Replayable, Transactable)]
 struct OldBanState {
     #[etch(collection = 0)]
-    bans: HashMap<(IpAddr, String), BanRecord>,
+    bans: HashMap<(BanTarget, String), BanRecord>,
     #[etch(collection = 1)]
-    ban_counts: HashMap<IpAddr, u32>,
+    ban_counts: HashMap<BanTarget, u32>,
 }
 
 #[test]
@@ -335,7 +336,7 @@ fn test_fresh_store_is_stamped_and_reopens_cleanly() {
 #[test]
 fn test_opening_old_format_wal_is_a_clean_schema_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+    let ip = BanTarget::V4(Ipv4Addr::new(203, 0, 113, 7));
 
     // Persist a store in the OLD layout: a ban plus a bare-u32 ban_count, no
     // meta collection — exactly what a pre-migration daemon left on disk.
@@ -389,4 +390,88 @@ fn test_version_mismatch_is_a_clean_schema_error() {
         Err(other) => panic!("expected SchemaMismatch, got: {other:?}"),
         Ok(_) => panic!("a future schema version must be rejected"),
     }
+}
+
+#[test]
+fn test_legacy_host_bans_and_counts_survive_prefix_upgrade() {
+    use std::net::IpAddr;
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+    struct HostBan {
+        ip: IpAddr,
+        jail_id: String,
+        banned_at: i64,
+        expires_at: Option<i64>,
+    }
+
+    #[derive(Clone, Debug, Default, Serialize, Deserialize, Replayable, Transactable)]
+    struct HostState {
+        #[etch(collection = 0)]
+        bans: HashMap<(IpAddr, String), HostBan>,
+        #[etch(collection = 1)]
+        ban_counts: HashMap<IpAddr, BanCount>,
+        #[etch(collection = 2)]
+        meta: HashMap<String, u64>,
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let jail = "sshd".to_string();
+    let hosts: [IpAddr; 2] = ["192.0.2.5".parse().unwrap(), "2001:db8::".parse().unwrap()];
+    let count = BanCount {
+        count: 2,
+        last_ban: 50,
+    };
+    {
+        let legacy =
+            Store::<HostState, WalBackend<HostState>>::open_wal(dir.path().into()).unwrap();
+        legacy
+            .write(|tx| {
+                for ip in hosts {
+                    tx.bans.put(
+                        (ip, jail.clone()),
+                        HostBan {
+                            ip,
+                            jail_id: jail.clone(),
+                            banned_at: 50,
+                            expires_at: None,
+                        },
+                    )?;
+                    tx.ban_counts.put(ip, count)?;
+                }
+                tx.meta.put("schema_version".into(), 1)?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    let prefix: BanTarget = "2001:db8::/64".parse().unwrap();
+    {
+        let store = open_ban_store(dir.path().into()).unwrap();
+        assert!(!store.replay_report().has_loss());
+        for ip in hosts.map(BanTarget::from) {
+            assert_eq!(store.read().bans[&(ip, jail.clone())].ip, ip);
+            assert_eq!(store.read().ban_counts[&ip], count);
+        }
+        store
+            .write(|tx| {
+                tx.bans.put(
+                    (prefix, jail.clone()),
+                    BanRecord {
+                        ip: prefix,
+                        jail_id: jail.clone(),
+                        banned_at: 51,
+                        expires_at: None,
+                    },
+                )?;
+                tx.ban_counts.put(prefix, count)?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    let store = open_ban_store(dir.path().into()).unwrap();
+    assert!(!store.replay_report().has_loss());
+    assert_eq!(store.read().bans.len(), 3);
+    assert_eq!(store.read().bans[&(prefix, jail)].ip, prefix);
+    assert_eq!(store.read().ban_counts[&prefix], count);
 }

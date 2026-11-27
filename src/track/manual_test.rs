@@ -55,7 +55,7 @@ fn spawn_tracker() -> Harness {
 
 impl Harness {
     /// Send a manual ban and return its pending response receiver.
-    async fn send_manual_ban(&self, ip: IpAddr) -> oneshot::Receiver<Result<()>> {
+    async fn send_manual_ban(&self, ip: BanTarget) -> oneshot::Receiver<Result<()>> {
         let (respond, rx) = oneshot::channel();
         self.cmd_tx
             .send(TrackerCmd::ManualBan {
@@ -103,8 +103,8 @@ impl Harness {
     }
 }
 
-fn ip(last: u8) -> IpAddr {
-    IpAddr::V4(Ipv4Addr::new(198, 51, 100, last))
+fn ip(last: u8) -> BanTarget {
+    BanTarget::V4(Ipv4Addr::new(198, 51, 100, last))
 }
 
 /// H1: a hung firewall command must not stall the tracker — other commands
@@ -121,7 +121,7 @@ async fn test_manual_ban_hung_firewall_keeps_tracker_responsive() {
     let now = chrono::Utc::now().timestamp();
     for i in 0..3 {
         let failure = Failure {
-            ip: ip(2),
+            ip: ip(2).addr(),
             jail_id: "sshd".to_string(),
             timestamp: now + i,
         };

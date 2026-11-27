@@ -5,7 +5,9 @@ use super::*;
 // (would need a test server). Argument construction and URL validation
 // are pure and tested directly below.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
+
+use crate::ban_target::BanTarget;
 
 #[test]
 fn is_http_url_accepts_http_and_https() {
@@ -60,7 +62,7 @@ async fn notify_ban_does_not_panic() {
     // not panic or block.
     crate::webhook::notify_ban(
         "http://127.0.0.1:1/test",
-        IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+        BanTarget::V4(Ipv4Addr::new(1, 2, 3, 4)),
         "sshd",
         3600,
     );
@@ -72,7 +74,7 @@ async fn notify_ban_does_not_panic() {
 async fn notify_unban_does_not_panic() {
     crate::webhook::notify_unban(
         "http://127.0.0.1:1/test",
-        IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8)),
+        BanTarget::V4(Ipv4Addr::new(5, 6, 7, 8)),
         "nginx",
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -157,7 +159,7 @@ async fn test_notify_ban_burst_does_not_block() {
     for i in 0..1_000u32 {
         crate::webhook::notify_ban(
             "http://127.0.0.1:1/test",
-            IpAddr::V4(Ipv4Addr::from(i)),
+            BanTarget::V4(Ipv4Addr::from(i)),
             "sshd",
             60,
         );

@@ -9,10 +9,11 @@
 //! never fork thousands of processes or grow memory without bound. Response
 //! bodies are discarded and captured stderr is capped at [`STDERR_CAP`].
 
-use std::net::IpAddr;
 use std::process::Stdio;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+
+use crate::ban_target::BanTarget;
 
 use tokio::io::AsyncReadExt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -116,7 +117,7 @@ fn curl_args<'a>(body: &'a str, url: &'a str) -> Vec<&'a str> {
 ///
 /// Spawns a `curl` subprocess in the background. Returns immediately.
 /// Non-`http(s)` URLs are refused and logged without spawning anything.
-pub fn notify_ban(url: &str, ip: IpAddr, jail: &str, ban_time: i64) {
+pub fn notify_ban(url: &str, ip: BanTarget, jail: &str, ban_time: i64) {
     let payload = serde_json::json!({
         "event": "ban",
         "ip": ip.to_string(),
@@ -130,7 +131,7 @@ pub fn notify_ban(url: &str, ip: IpAddr, jail: &str, ban_time: i64) {
 /// Fire a webhook notification for an unban event.
 ///
 /// Non-`http(s)` URLs are refused and logged without spawning anything.
-pub fn notify_unban(url: &str, ip: IpAddr, jail: &str) {
+pub fn notify_unban(url: &str, ip: BanTarget, jail: &str) {
     let payload = serde_json::json!({
         "event": "unban",
         "ip": ip.to_string(),

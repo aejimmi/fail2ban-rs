@@ -1,10 +1,11 @@
 use super::*;
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 use tokio::sync::mpsc;
 
+use crate::ban_target::BanTarget;
 use crate::config::{Config, JailConfig};
 use crate::enforce::FirewallCmd;
 use crate::track::state::BanRecord;
@@ -29,6 +30,7 @@ pub(crate) fn test_jail_config() -> JailConfig {
         log_path: "/tmp/test.log".into(),
         date_format: crate::detect::date::DateFormat::Syslog,
         filter: vec!["from <HOST>".to_string()],
+        ipv6_prefix_bans: false,
         max_retry: 3,
         find_time: 600,
         ban_time: 60,
@@ -79,7 +81,7 @@ async fn test_reload_delta_keeps_unchanged_jail_silent() {
 
     // A live ban for the kept jail must NOT be reapplied.
     let bans = vec![BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+        ip: BanTarget::V4(Ipv4Addr::new(1, 2, 3, 4)),
         jail_id: "sshd".to_string(),
         banned_at: 1000,
         expires_at: Some(9999),
@@ -114,13 +116,13 @@ async fn test_reload_delta_adds_jail_and_reapplies_only_its_bans() {
 
     let bans = vec![
         BanRecord {
-            ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            ip: BanTarget::V4(Ipv4Addr::new(1, 1, 1, 1)),
             jail_id: "sshd".to_string(),
             banned_at: 1000,
             expires_at: Some(9999),
         },
         BanRecord {
-            ip: IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)),
+            ip: BanTarget::V4(Ipv4Addr::new(2, 2, 2, 2)),
             jail_id: "nginx".to_string(),
             banned_at: 1000,
             expires_at: Some(9999),
@@ -191,7 +193,7 @@ async fn test_reload_delta_backend_type_change_is_remove_then_add() {
     assert!(delta.kept.is_empty());
 
     let bans = vec![BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+        ip: BanTarget::V4(Ipv4Addr::new(9, 9, 9, 9)),
         jail_id: "sshd".to_string(),
         banned_at: 1000,
         expires_at: Some(9999),

@@ -26,11 +26,13 @@ filter = [
 port = ["22"]
 protocol = "tcp"
 max_retry = 5
+# Count automatic IPv6 failures by /64 and ban the entire prefix.
+# ipv6_prefix_bans = true
 find_time = "10m"
 ban_time = "1h"
 # Firewall backend: "nftables", "iptables", "ipset", or a script table.
-# "ipset" keeps bans in a kernel hash set — O(1) lookups on long ban lists —
-# and needs the ipset tool plus the ip_set, ip_set_hash_ip and xt_set modules.
+# "ipset" keeps bans in a kernel hash set — hash lookups on long ban lists —
+# and needs the ipset tool plus the ip_set, ip_set_hash_ip, ip_set_hash_net and xt_set modules.
 backend = "nftables"
 
 # To tune ipset, replace the backend line above with a table placed AFTER every

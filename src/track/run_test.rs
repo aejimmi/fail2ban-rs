@@ -43,13 +43,13 @@ async fn test_maxmind_asn_att() {
     });
 
     // Target: ASN 7018 (AT&T Services, Inc.)
-    let ip: std::net::IpAddr = "71.134.65.5".parse().unwrap();
+    let ip: BanTarget = "71.134.65.5".parse().unwrap();
     let now = chrono::Utc::now().timestamp();
 
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -101,13 +101,13 @@ async fn test_maxmind_country_uk_ipv6() {
     });
 
     // Target: United Kingdom (IPv6)
-    let ip: std::net::IpAddr = "2a02:dd40:22::42".parse().unwrap();
+    let ip: BanTarget = "2a02:dd40:22::42".parse().unwrap();
     let now = chrono::Utc::now().timestamp();
 
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -159,13 +159,13 @@ async fn test_maxmind_city_sweden() {
     });
 
     // Target: Linköping, Sweden (Validates UTF-8 handling too!)
-    let ip: std::net::IpAddr = "89.160.20.142".parse().unwrap();
+    let ip: BanTarget = "89.160.20.142".parse().unwrap();
     let now = chrono::Utc::now().timestamp();
 
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -255,14 +255,14 @@ async fn test_same_ip_different_jails_tracked_independently() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10));
+    let ip = BanTarget::V4(Ipv4Addr::new(10, 10, 10, 10));
     let now = chrono::Utc::now().timestamp();
 
     // Trigger ban in sshd (3 failures = max_retry).
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -284,7 +284,7 @@ async fn test_same_ip_different_jails_tracked_independently() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "nginx".to_string(),
                 timestamp: now + 10 + i,
             })

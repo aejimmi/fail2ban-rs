@@ -1,11 +1,11 @@
 //! Shared test helpers for the tracker integration tests.
 
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use etchdb::Store;
 use tokio::sync::mpsc;
 
+use crate::ban_target::BanTarget;
 use crate::config::JailConfig;
 use crate::enforce::FirewallCmd;
 use crate::track::TrackerCmd;
@@ -66,7 +66,7 @@ pub(crate) fn test_global_config() -> crate::config::GlobalConfig {
 pub(crate) async fn manual_ban(
     cmd_tx: &mpsc::Sender<TrackerCmd>,
     executor_rx: &mut mpsc::Receiver<FirewallCmd>,
-    ip: IpAddr,
+    ip: BanTarget,
     ban_time: i64,
 ) {
     let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
@@ -98,7 +98,7 @@ pub(crate) async fn manual_ban(
 pub(crate) async fn manual_unban(
     cmd_tx: &mpsc::Sender<TrackerCmd>,
     executor_rx: &mut mpsc::Receiver<FirewallCmd>,
-    ip: IpAddr,
+    ip: BanTarget,
 ) {
     let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx

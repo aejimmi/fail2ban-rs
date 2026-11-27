@@ -1,6 +1,6 @@
 //! Ban record type used across the crate.
 
-use std::net::IpAddr;
+use crate::ban_target::BanTarget;
 
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BanRecord {
     /// The banned IP address.
-    pub ip: IpAddr,
+    pub ip: BanTarget,
     /// Which jail triggered the ban.
     pub jail_id: String,
     /// When the ban was applied (unix timestamp).

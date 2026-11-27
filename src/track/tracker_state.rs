@@ -5,13 +5,13 @@
 //! store and IO handles, keeping per-function argument counts low.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use etchdb::{Store, WalBackend};
 
 use tokio::sync::mpsc;
 
+use crate::ban_target::BanTarget;
 use crate::enforce::FirewallCmd;
 use crate::logging::Logger;
 use crate::track::ban_calc::JailParams;
@@ -23,7 +23,7 @@ use crate::track::persist::BanState;
 use crate::track::unban::UnbanOutcome;
 
 /// Key identifying a failure/ban stream: the offending IP and the jail id.
-pub(super) type FailKey = (IpAddr, String);
+pub(super) type FailKey = (BanTarget, String);
 
 /// Per-key failure timestamp buffer.
 pub(super) struct FailState {
@@ -130,7 +130,7 @@ pub(super) struct TrackerState {
 
 impl TrackerState {
     /// Log and webhook-notify a ban.
-    pub(super) fn notify_ban(&self, ip: IpAddr, jail_id: &str, ban_time: i64, manual: bool) {
+    pub(super) fn notify_ban(&self, ip: BanTarget, jail_id: &str, ban_time: i64, manual: bool) {
         if let Some(ref t) = self.logger {
             t.log_ban(ip, jail_id, ban_time, manual);
         }
@@ -142,7 +142,7 @@ impl TrackerState {
     }
 
     /// Log and webhook-notify an unban.
-    pub(super) fn notify_unban(&self, ip: IpAddr, jail_id: &str, manual: bool) {
+    pub(super) fn notify_unban(&self, ip: BanTarget, jail_id: &str, manual: bool) {
         if let Some(ref t) = self.logger {
             t.log_unban(ip, jail_id, manual);
         }

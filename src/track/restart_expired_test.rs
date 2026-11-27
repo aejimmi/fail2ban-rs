@@ -21,7 +21,7 @@ use crate::track::persist::open_ban_store;
 use crate::track::state::BanRecord;
 use crate::track::test_support::{test_global_config, test_jail_config};
 
-const IP: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44));
+const IP: BanTarget = BanTarget::V4(Ipv4Addr::new(192, 0, 2, 44));
 
 /// Persist an expired ban for `IP` into a fresh store at `dir` and close it.
 fn write_expired_ban(dir: &std::path::Path) {

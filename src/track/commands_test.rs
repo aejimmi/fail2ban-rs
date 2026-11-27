@@ -37,7 +37,7 @@ async fn test_manual_ban_via_cmd() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(60, 60, 60, 60));
+    let ip = BanTarget::V4(Ipv4Addr::new(60, 60, 60, 60));
     let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(TrackerCmd::ManualBan {
@@ -76,7 +76,7 @@ async fn test_manual_ban_already_banned_error() {
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), test_jail_config());
 
-    let ip = IpAddr::V4(Ipv4Addr::new(70, 70, 70, 70));
+    let ip = BanTarget::V4(Ipv4Addr::new(70, 70, 70, 70));
     let now = chrono::Utc::now().timestamp();
     let restored = vec![crate::track::state::BanRecord {
         ip,
@@ -132,7 +132,7 @@ async fn test_manual_unban_via_cmd() {
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), test_jail_config());
 
-    let ip = IpAddr::V4(Ipv4Addr::new(80, 80, 80, 80));
+    let ip = BanTarget::V4(Ipv4Addr::new(80, 80, 80, 80));
     let now = chrono::Utc::now().timestamp();
     let restored = vec![crate::track::state::BanRecord {
         ip,
@@ -197,7 +197,7 @@ async fn test_query_bans_via_cmd() {
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), test_jail_config());
 
-    let ip = IpAddr::V4(Ipv4Addr::new(90, 90, 90, 90));
+    let ip = BanTarget::V4(Ipv4Addr::new(90, 90, 90, 90));
     let now = chrono::Utc::now().timestamp();
     let restored = vec![crate::track::state::BanRecord {
         ip,
@@ -274,12 +274,12 @@ async fn test_get_stats_via_cmd() {
     });
 
     // Send some failures first.
-    let ip = IpAddr::V4(Ipv4Addr::new(100, 100, 100, 100));
+    let ip = BanTarget::V4(Ipv4Addr::new(100, 100, 100, 100));
     let now = chrono::Utc::now().timestamp();
     for i in 0..2 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -334,7 +334,7 @@ async fn test_manual_ban_unknown_jail_returns_error() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(110, 110, 110, 110));
+    let ip = BanTarget::V4(Ipv4Addr::new(110, 110, 110, 110));
     let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(TrackerCmd::ManualBan {
@@ -386,7 +386,7 @@ async fn test_manual_unban_unknown_jail_returns_error() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(111, 111, 111, 111));
+    let ip = BanTarget::V4(Ipv4Addr::new(111, 111, 111, 111));
     let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(TrackerCmd::ManualUnban {
@@ -438,7 +438,7 @@ async fn test_manual_unban_not_banned_returns_error() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(112, 112, 112, 112));
+    let ip = BanTarget::V4(Ipv4Addr::new(112, 112, 112, 112));
     let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(TrackerCmd::ManualUnban {

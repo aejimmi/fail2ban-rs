@@ -1,18 +1,18 @@
 //! Nftables firewall backend.
 //!
 //! All state lives in table `inet fail2ban-rs`. Each jail owns one base chain
-//! `f2b-<jail>` (hooked on input) plus two sets, `f2b-<jail>` (IPv4) and
-//! `f2b-<jail>-v6` (IPv6). Chains and sets live in separate nft namespaces,
-//! so the shared `f2b-<jail>` name is unambiguous. Because a jail's rules are
+//! `f2b-<jail>` (hooked on input) and three sets: `f2b-<jail>` (IPv4),
+//! `f2b-<jail>-v6` (IPv6 hosts), and `f2b6-<jail>` (IPv6 prefixes).
+//! Chains and sets have separate namespaces. Because a jail's rules are
 //! confined to its own chain, teardown drops them all by deleting the chain —
 //! which in turn releases the sets so they can be deleted too.
 
 use std::collections::HashSet;
-use std::net::IpAddr;
 use std::path::PathBuf;
 
 use tracing::debug;
 
+use crate::ban_target::BanTarget;
 use crate::enforce::{FirewallBackend, cmd};
 use crate::error::{Error, Result};
 use crate::text::lossy;
@@ -47,13 +47,18 @@ pub(crate) const V6_SET_SUFFIX: &str = "-v6";
 ///
 /// The `timeout` flag is required so elements can carry a kernel-side expiry,
 /// giving bans a backstop that self-clears even if the tracker dies.
-fn set_block(elem_type: &str) -> String {
-    format!("{{ type {elem_type}; flags timeout; }}")
+fn set_block(elem_type: &str, interval: bool) -> String {
+    let flags = if interval {
+        "interval,timeout"
+    } else {
+        "timeout"
+    };
+    format!("{{ type {elem_type}; flags {flags}; }}")
 }
 
 /// Build the `nft` element fragment for an IP, with a `timeout Ns` clause when
 /// `expires_at` is set. A past/near expiry is clamped to a minimum of 1s.
-fn element_spec(ip: &IpAddr, expires_at: Option<i64>, now: i64) -> String {
+fn element_spec(ip: &BanTarget, expires_at: Option<i64>, now: i64) -> String {
     match expires_at {
         Some(exp) => {
             let secs = (exp - now).max(1);
@@ -68,26 +73,33 @@ fn chain_name(jail: &str) -> String {
     format!("f2b-{jail}")
 }
 
-/// Names of a jail's IPv4 and IPv6 sets, in that order.
-fn set_names(jail: &str) -> [String; 2] {
-    [format!("f2b-{jail}"), format!("f2b-{jail}{V6_SET_SUFFIX}")]
+/// Names of a jail's IPv4, IPv6 host, and IPv6 prefix sets.
+fn set_names(jail: &str) -> [String; 3] {
+    [
+        format!("f2b-{jail}"),
+        format!("f2b-{jail}{V6_SET_SUFFIX}"),
+        format!("f2b6-{jail}"),
+    ]
 }
 
 /// Return the family-specific nftables set for a jail.
 ///
-/// Each jail has separate `ipv4_addr` and `ipv6_addr` sets, so element
-/// operations must use the set matching the address family.
-fn set_name_for_ip(jail: &str, ip: &IpAddr) -> String {
-    let [v4, v6] = set_names(jail);
-    if ip.is_ipv6() { v6 } else { v4 }
+/// Prefixes use a separate interval set so they can coexist with host bans.
+fn set_name_for_ip(jail: &str, ip: &BanTarget) -> String {
+    let [v4, v6, prefix] = set_names(jail);
+    match ip {
+        BanTarget::V4(_) => v4,
+        BanTarget::V6(_) => v6,
+        BanTarget::V6Prefix(_) => prefix,
+    }
 }
 
-/// Build the two reject rules (IPv4, IPv6) for a jail.
+/// Build the reject rules for a jail.
 ///
 /// With no ports every packet from a banned source is rejected; otherwise the
 /// rules are scoped to `<protocol> dport { <ports> }`.
-fn rule_exprs(jail: &str, ports: &[String], protocol: &str) -> [String; 2] {
-    let [v4, v6] = set_names(jail);
+fn rule_exprs(jail: &str, ports: &[String], protocol: &str) -> [String; 3] {
+    let [v4, v6, prefix] = set_names(jail);
     let scope = if ports.is_empty() {
         String::new()
     } else {
@@ -96,6 +108,7 @@ fn rule_exprs(jail: &str, ports: &[String], protocol: &str) -> [String; 2] {
     [
         format!("{scope}ip saddr @{v4} reject"),
         format!("{scope}ip6 saddr @{v6} reject"),
+        format!("{scope}ip6 saddr @{prefix} reject"),
     ]
 }
 
@@ -105,7 +118,7 @@ fn rule_exprs(jail: &str, ports: &[String], protocol: &str) -> [String; 2] {
 /// a plain whitespace split yields `1.2.3.4,` for every non-final element.
 /// Split on whitespace and `,{}=` instead and keep only tokens that parse as
 /// an address (timeouts like `60s` never do).
-fn parse_set_elements(listing: &str) -> HashSet<IpAddr> {
+fn parse_set_elements(listing: &str) -> HashSet<BanTarget> {
     let Some(start) = listing.find("elements") else {
         return HashSet::new();
     };
@@ -151,18 +164,30 @@ impl NftablesBackend {
             .await;
     }
 
-    /// Create both family sets (idempotent: `add set` tolerates existing ones).
+    /// Create the address and prefix sets (idempotent: `add set` tolerates existing ones).
     async fn add_sets(&self, jail: &str) -> Result<()> {
-        let [v4, v6] = set_names(jail);
-        self.run_nft(&["add", "set", FAMILY, TABLE, &v4, &set_block("ipv4_addr")])
+        let [v4, v6, prefix] = set_names(jail);
+        for (set, kind, interval) in [
+            (v4, "ipv4_addr", false),
+            (v6, "ipv6_addr", false),
+            (prefix, "ipv6_addr", true),
+        ] {
+            self.run_nft(&[
+                "add",
+                "set",
+                FAMILY,
+                TABLE,
+                &set,
+                &set_block(kind, interval),
+            ])
             .await?;
-        self.run_nft(&["add", "set", FAMILY, TABLE, &v6, &set_block("ipv6_addr")])
-            .await
+        }
+        Ok(())
     }
 
     /// List one set and parse its elements. A nonzero exit (missing set,
     /// permission failure) is an error, never "empty".
-    async fn list_set(&self, set: &str) -> Result<HashSet<IpAddr>> {
+    async fn list_set(&self, set: &str) -> Result<HashSet<BanTarget>> {
         let args = ["list", "set", FAMILY, TABLE, set];
         let output = cmd::output(&self.nft_path, "nft", &args).await?;
         if !output.status.success() {
@@ -223,13 +248,13 @@ impl FirewallBackend for NftablesBackend {
         Ok(())
     }
 
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.ban_with_timeout(ip, jail, None, 0).await
     }
 
     async fn ban_with_timeout(
         &self,
-        ip: &IpAddr,
+        ip: &BanTarget,
         jail: &str,
         expires_at: Option<i64>,
         now: i64,
@@ -240,7 +265,7 @@ impl FirewallBackend for NftablesBackend {
             .await
     }
 
-    async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn unban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         let set_name = set_name_for_ip(jail, ip);
         let elem = format!("{{ {ip} }}");
         // An element may already be gone (kernel timeout expired it, or it was
@@ -254,12 +279,12 @@ impl FirewallBackend for NftablesBackend {
         Ok(())
     }
 
-    async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
+    async fn is_banned(&self, ip: &BanTarget, jail: &str) -> Result<bool> {
         let set_name = set_name_for_ip(jail, ip);
         Ok(self.list_set(&set_name).await?.contains(ip))
     }
 
-    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<IpAddr>>> {
+    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<BanTarget>>> {
         let mut all = HashSet::new();
         for set in set_names(jail) {
             all.extend(self.list_set(&set).await?);

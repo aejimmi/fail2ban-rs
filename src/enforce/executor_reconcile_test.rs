@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 #[derive(Clone)]
 enum Snap {
     /// `Ok(Some(set))` with these IPs present.
-    Set(Vec<IpAddr>),
+    Set(Vec<BanTarget>),
     /// `Ok(None)` — snapshots unsupported.
     Unsupported,
     /// `Err(..)` — the query failed.
@@ -24,11 +24,11 @@ struct ReconcileMock {
     verify: bool,
     snap: Snap,
     /// IPs `is_banned` reports as present.
-    present: Vec<IpAddr>,
+    present: Vec<BanTarget>,
 }
 
 impl ReconcileMock {
-    fn new(verify: bool, snap: Snap, present: Vec<IpAddr>) -> (Self, Arc<Mutex<Vec<String>>>) {
+    fn new(verify: bool, snap: Snap, present: Vec<BanTarget>) -> (Self, Arc<Mutex<Vec<String>>>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mock = Self {
             calls: Arc::clone(&calls),
@@ -52,21 +52,21 @@ impl FirewallBackend for ReconcileMock {
     async fn teardown(&self, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.log(format!("ban:{ip}:{jail}"));
         Ok(())
     }
-    async fn unban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+    async fn unban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
+    async fn is_banned(&self, ip: &BanTarget, jail: &str) -> Result<bool> {
         self.log(format!("is_banned:{ip}:{jail}"));
         Ok(self.present.contains(ip))
     }
     fn can_verify(&self) -> bool {
         self.verify
     }
-    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<IpAddr>>> {
+    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<BanTarget>>> {
         self.log(format!("snapshot:{jail}"));
         match &self.snap {
             Snap::Set(ips) => Ok(Some(ips.iter().copied().collect())),
@@ -84,8 +84,8 @@ impl FirewallBackend for ReconcileMock {
     }
 }
 
-fn ip(last: u8) -> IpAddr {
-    IpAddr::V4(Ipv4Addr::new(10, 0, 0, last))
+fn ip(last: u8) -> BanTarget {
+    BanTarget::V4(Ipv4Addr::new(10, 0, 0, last))
 }
 
 fn record(last: u8, jail: &str) -> BanRecord {
@@ -196,17 +196,17 @@ async fn test_reconcile_is_banned_error_treated_as_present_no_reban() {
         async fn teardown(&self, _jail: &str) -> Result<()> {
             Ok(())
         }
-        async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+        async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
             self.calls
                 .lock()
                 .expect("lock")
                 .push(format!("ban:{ip}:{jail}"));
             Ok(())
         }
-        async fn unban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+        async fn unban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
             Ok(())
         }
-        async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
+        async fn is_banned(&self, ip: &BanTarget, jail: &str) -> Result<bool> {
             self.calls
                 .lock()
                 .expect("lock")
@@ -216,7 +216,7 @@ async fn test_reconcile_is_banned_error_treated_as_present_no_reban() {
         fn can_verify(&self) -> bool {
             true
         }
-        async fn snapshot(&self, _jail: &str) -> Result<Option<HashSet<IpAddr>>> {
+        async fn snapshot(&self, _jail: &str) -> Result<Option<HashSet<BanTarget>>> {
             Ok(None)
         }
         fn name(&self) -> &'static str {
@@ -261,24 +261,24 @@ async fn test_reconcile_reapply_failure_is_swallowed() {
         async fn teardown(&self, _jail: &str) -> Result<()> {
             Ok(())
         }
-        async fn ban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+        async fn ban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
             Ok(())
         }
-        async fn unban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+        async fn unban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
             Ok(())
         }
-        async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
+        async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> Result<bool> {
             Ok(false)
         }
         fn can_verify(&self) -> bool {
             true
         }
-        async fn snapshot(&self, _jail: &str) -> Result<Option<HashSet<IpAddr>>> {
+        async fn snapshot(&self, _jail: &str) -> Result<Option<HashSet<BanTarget>>> {
             Ok(Some(HashSet::new()))
         }
         async fn ban_with_timeout(
             &self,
-            _ip: &IpAddr,
+            _ip: &BanTarget,
             _jail: &str,
             _expires_at: Option<i64>,
             _now: i64,
@@ -299,7 +299,7 @@ async fn test_reconcile_reapply_failure_is_swallowed() {
 fn test_group_by_jail_preserves_order() {
     let bans = vec![record(1, "a"), record(2, "b"), record(3, "a")];
     let groups = group_by_jail(&bans);
-    let shape: Vec<(&str, Vec<IpAddr>)> = groups
+    let shape: Vec<(&str, Vec<BanTarget>)> = groups
         .iter()
         .map(|(j, g)| (*j, g.iter().map(|b| b.ip).collect()))
         .collect();

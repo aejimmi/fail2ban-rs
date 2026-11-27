@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use tracing::info;
 use tracing::{debug, warn};
 
+use crate::ban_target::BanTarget;
 use crate::detect::watcher::Failure;
 use crate::track::ban_calc::calc_ban_time;
 use crate::track::circular::CircularTimestamps;
@@ -17,11 +18,24 @@ pub(super) async fn handle_failure(failure: Failure, s: &mut TrackerState) {
     s.counters.total_failures += 1;
     incr_jail_counter(&mut s.counters.jail_failures, &failure.jail_id);
 
+    let Some(params) = s.jail_params.get(&failure.jail_id) else {
+        warn!(jail = %failure.jail_id, reason = "unknown_jail", "failure ignored");
+        return;
+    };
+    let target = params
+        .prefix_ignore
+        .as_ref()
+        .map_or_else(|| failure.ip.into(), |ignore| ignore.ban_target(failure.ip));
     // Build the (ip, jail) key once and reuse it for the membership check and
     // the failures-map entry. The common case (not banned, below threshold)
     // takes no store lock — `banned_keys` mirrors the persisted ban set.
-    let key: FailKey = (failure.ip, failure.jail_id.clone());
-    if s.index.banned_keys.contains(&key) {
+    let mut key: FailKey = (failure.ip.into(), failure.jail_id.clone());
+    let host_banned = s.index.banned_keys.contains(&key);
+    let prefix_banned = BanTarget::ipv6_prefix(failure.ip).is_some_and(|prefix| {
+        key.0 = prefix;
+        s.index.banned_keys.contains(&key)
+    });
+    if host_banned || prefix_banned {
         debug!(
             ip = %failure.ip,
             jail = %failure.jail_id,
@@ -31,33 +45,20 @@ pub(super) async fn handle_failure(failure: Failure, s: &mut TrackerState) {
         return;
     }
 
-    if record_failure(&failure, key, s) {
-        ban_on_threshold(failure, s).await;
-    }
-}
-
-/// Push the failure into its (ip, jail) window; returns whether the jail's
-/// threshold is now reached. Unknown jails are logged and ignored.
-fn record_failure(failure: &Failure, key: FailKey, s: &mut TrackerState) -> bool {
-    let Some(params) = s.jail_params.get(&failure.jail_id) else {
-        warn!(
-            jail = %failure.jail_id,
-            reason = "unknown_jail",
-            "failure ignored"
-        );
-        return false;
-    };
     let (max_retry, find_time) = (params.max_retry, params.find_time);
+    key.0 = target;
     let fail_state = s.failures.entry(key).or_insert_with(|| FailState {
         timestamps: CircularTimestamps::new(max_retry as usize),
     });
     fail_state.timestamps.push(failure.timestamp);
-    fail_state.timestamps.threshold_reached(find_time)
+    if fail_state.timestamps.threshold_reached(find_time) {
+        ban_on_threshold(failure, target, s).await;
+    }
 }
 
 /// Execute a threshold-triggered ban: read and increment the escalation count,
 /// compute the effective ban time, log (with optional GeoIP enrichment), and ban.
-async fn ban_on_threshold(failure: Failure, s: &mut TrackerState) {
+async fn ban_on_threshold(failure: Failure, target: BanTarget, s: &mut TrackerState) {
     let Some(params) = s.jail_params.get(&failure.jail_id) else {
         return;
     };
@@ -66,13 +67,13 @@ async fn ban_on_threshold(failure: Failure, s: &mut TrackerState) {
         .store
         .read()
         .ban_counts
-        .get(&failure.ip)
+        .get(&target)
         .map_or(0, |bc| bc.count);
     let effective_ban_time = calc_ban_time(base_ban_time, count, params);
 
-    log_threshold_ban(&failure, effective_ban_time, count + 1, s);
+    log_threshold_ban(&failure, target, effective_ban_time, count + 1, s);
     execute_ban(
-        failure.ip,
+        target,
         &failure.jail_id,
         effective_ban_time,
         Some(count + 1),
@@ -83,15 +84,21 @@ async fn ban_on_threshold(failure: Failure, s: &mut TrackerState) {
 
 /// Log a threshold ban, GeoIP-enriched when the `maxmind` feature is on.
 #[cfg_attr(not(feature = "maxmind"), allow(unused_variables))]
-fn log_threshold_ban(failure: &Failure, ban_time: i64, ban_count: u32, s: &TrackerState) {
+fn log_threshold_ban(
+    failure: &Failure,
+    target: BanTarget,
+    ban_time: i64,
+    ban_count: u32,
+    s: &TrackerState,
+) {
     #[cfg(feature = "maxmind")]
     {
         let enrichment = s.maxmind.enrich(failure.ip, &failure.jail_id);
-        crate::track::maxmind::log_ban_event(failure, ban_time, ban_count, &enrichment);
+        crate::track::maxmind::log_ban_event(failure, target, ban_time, ban_count, &enrichment);
     }
     #[cfg(not(feature = "maxmind"))]
     info!(
-        ip = %failure.ip,
+        ip = %target,
         jail = %failure.jail_id,
         ban_time,
         ban_count,

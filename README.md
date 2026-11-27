@@ -68,6 +68,12 @@ ignoreself = true
 
 Durations accept `s`, `m`, `h`, `d`, `w` suffixes (e.g. `"10m"`, `"1h"`, `"7d"`). Raw seconds also work.
 
+### IPv6 /64 bans
+
+Set `ipv6_prefix_bans = true` in a jail to count failures from the same IPv6 /64 together. Once the combined failures reach `max_retry` within `find_time`, the jail bans the whole /64. IPv4 and any /64 that overlaps `ignoreip` or an address detected by `ignoreself` still use host-level bans.
+
+`list-bans` displays prefixes such as `2001:db8::/64`. Use that target with `fail2ban-rs unban 2001:db8::/64 --jail sshd`. A manual `ban` accepts the same syntax. With the script backend, both scripts must accept IPv6 CIDR notation in `<IP>` before you use prefix bans.
+
 ### Escalation decay
 
 With `bantime_increment`, each repeat ban of an IP raises its ban time. The per-IP escalation counter is reset after a quiet period so a reformed IP starts fresh and the counter map cannot grow without bound:
@@ -93,7 +99,7 @@ ban_cmd = "/usr/local/bin/ban.sh <IP> <JAIL>"
 unban_cmd = "/usr/local/bin/unban.sh <IP> <JAIL>"
 ```
 
-**ipset**: For large ban lists. Every ban becomes an O(1) kernel hash lookup instead of a linear walk down a chain, and there is nothing to prepare by hand:
+**ipset**: For large ban lists. Uses kernel hash sets instead of a linear walk down a chain, and there is nothing to prepare by hand:
 
 ```toml
 [jail.sshd]

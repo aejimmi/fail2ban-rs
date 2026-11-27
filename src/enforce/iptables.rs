@@ -5,12 +5,12 @@
 //! jail has ports). Bans are `-s <ip> -j DROP` rules inside the jail chain.
 
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use tracing::{debug, warn};
 
+use crate::ban_target::BanTarget;
 use crate::enforce::{FirewallBackend, cmd};
 use crate::error::{Error, Result};
 use crate::text::lossy;
@@ -51,21 +51,48 @@ fn jump_args(flag: &str, chain: &str, spec: &RuleSpec) -> Vec<String> {
     args
 }
 
-/// Parse banned source addresses out of `iptables -L <chain> -n` output.
-///
-/// Host sources may print bare or with a `/32` / `/128` suffix; wildcard
-/// columns (`0.0.0.0/0`, `::/0`) never parse and are skipped.
-fn parse_listing(listing: &str) -> HashSet<IpAddr> {
+fn parse_source(token: &str) -> Option<BanTarget> {
+    token
+        .strip_suffix("/32")
+        .or_else(|| token.strip_suffix("/128"))
+        .unwrap_or(token)
+        .parse()
+        .ok()
+}
+
+/// Parse addresses and IPv6 /64s from a numeric chain listing.
+/// Wildcard columns have a /0, which is not a ban target.
+fn parse_listing(listing: &str) -> HashSet<BanTarget> {
     listing
         .split_whitespace()
-        .filter_map(|token| {
-            let host = token
-                .strip_suffix("/32")
-                .or_else(|| token.strip_suffix("/128"))
-                .unwrap_or(token);
-            host.parse().ok()
+        .filter_map(parse_source)
+        .collect()
+}
+
+/// Rule numbers for the exact source and mask, counting every rule in the chain.
+fn exact_drop_rules(listing: &str, chain: &str, target: BanTarget) -> Vec<usize> {
+    let source_prefix = format!("{chain} -s ");
+    listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("-A "))
+        .enumerate()
+        .filter_map(|(index, rule)| {
+            let source = rule
+                .strip_prefix(&source_prefix)?
+                .strip_suffix(" -j DROP")?;
+            (parse_source(source) == Some(target)).then_some(index + 1)
         })
         .collect()
+}
+
+/// ip6tables-nft may consider a /64 and a /128 with the same base address
+/// identical in -C and -D. Use exact rule listings for both of those targets.
+fn needs_exact_lookup(ip: BanTarget) -> bool {
+    match ip {
+        BanTarget::V6Prefix(_) => true,
+        BanTarget::V6(host) => host.to_bits() as u64 == 0,
+        BanTarget::V4(_) => false,
+    }
 }
 
 /// Iptables backend — uses `iptables`/`ip6tables` resolved at startup.
@@ -87,10 +114,10 @@ impl IptablesBackend {
     }
 
     /// Binary and label for an address family.
-    fn family(&self, ip: &IpAddr) -> (&Path, &'static str) {
+    fn family(&self, ip: &BanTarget) -> (&Path, &'static str) {
         match ip {
-            IpAddr::V4(_) => (&self.iptables_path, "iptables"),
-            IpAddr::V6(_) => (&self.ip6tables_path, "ip6tables"),
+            BanTarget::V4(_) => (&self.iptables_path, "iptables"),
+            BanTarget::V6(_) | BanTarget::V6Prefix(_) => (&self.ip6tables_path, "ip6tables"),
         }
     }
 
@@ -174,8 +201,25 @@ impl IptablesBackend {
         .await
     }
 
+    async fn drop_rule_numbers(
+        cmd: &Path,
+        label: &str,
+        chain: &str,
+        target: BanTarget,
+    ) -> Result<Vec<usize>> {
+        let output = cmd::xtables_output(cmd, label, &["-S", chain]).await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::firewall(format!(
+                "{label} list failed for {chain}: {}",
+                stderr.trim()
+            )));
+        }
+        Ok(exact_drop_rules(&lossy(&output.stdout), chain, target))
+    }
+
     /// List a family's jail chain and parse the banned addresses.
-    async fn list_chain(cmd: &Path, label: &str, chain: &str) -> Result<HashSet<IpAddr>> {
+    async fn list_chain(cmd: &Path, label: &str, chain: &str) -> Result<HashSet<BanTarget>> {
         let output = cmd::xtables_output(cmd, label, &["-L", chain, "-n"]).await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -232,20 +276,36 @@ impl FirewallBackend for IptablesBackend {
 
     /// Insert the DROP rule unless an identical one is already present, so
     /// a re-ban (restore, reconcile, reload seeding) never stacks copies.
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         let (cmd, label) = self.family(ip);
         let (chain, ip_str) = (chain_name(jail), ip.to_string());
         let rule = |op| [op, chain.as_str(), "-s", ip_str.as_str(), "-j", "DROP"];
+        if needs_exact_lookup(*ip) {
+            if Self::drop_rule_numbers(cmd, label, &chain, *ip)
+                .await?
+                .is_empty()
+            {
+                cmd::xtables_run(cmd, label, &rule("-I")).await?;
+            }
+            return Ok(());
+        }
         cmd::ensure_rule(cmd, label, &rule("-C"), &rule("-I")).await
     }
 
     /// Delete every copy of the DROP rule (older versions could stack
     /// duplicates, and deleting only one would leave the IP blocked). An
     /// already-absent rule is not an error.
-    async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn unban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         let (cmd, label) = self.family(ip);
         let (chain, ip_str) = (chain_name(jail), ip.to_string());
         let rule = |op| [op, chain.as_str(), "-s", ip_str.as_str(), "-j", "DROP"];
+        if needs_exact_lookup(*ip) {
+            let numbers = Self::drop_rule_numbers(cmd, label, &chain, *ip).await?;
+            for number in numbers.into_iter().rev() {
+                cmd::xtables_run(cmd, label, &["-D", &chain, &number.to_string()]).await?;
+            }
+            return Ok(());
+        }
         let deleted = cmd::delete_all_rules(cmd, label, &rule("-C"), &rule("-D")).await?;
         if deleted == 0 {
             debug!(%ip, jail = %jail, "iptables unban: rule absent");
@@ -253,14 +313,14 @@ impl FirewallBackend for IptablesBackend {
         Ok(())
     }
 
-    async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
+    async fn is_banned(&self, ip: &BanTarget, jail: &str) -> Result<bool> {
         let (cmd, label) = self.family(ip);
         Ok(Self::list_chain(cmd, label, &chain_name(jail))
             .await?
             .contains(ip))
     }
 
-    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<IpAddr>>> {
+    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<BanTarget>>> {
         let chain = chain_name(jail);
         let mut all = HashSet::new();
         for (cmd, label, _) in self.families() {
