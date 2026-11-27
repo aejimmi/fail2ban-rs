@@ -47,6 +47,7 @@ async fn test_bans_after_threshold() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -115,6 +116,7 @@ async fn test_reban_on_restart_false_still_bans_new_offenders() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -179,6 +181,7 @@ async fn test_no_ban_below_threshold() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -236,6 +239,7 @@ async fn test_no_ban_outside_find_time() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + (i * 50),
+                log_line: None,
             })
             .await
             .unwrap();
@@ -289,6 +293,7 @@ async fn test_already_banned_ip_ignored() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -308,6 +313,7 @@ async fn test_already_banned_ip_ignored() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + 10 + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -362,6 +368,7 @@ async fn test_unknown_jail_failure_ignored() {
             ip: IpAddr::V4(Ipv4Addr::new(30, 30, 30, 30)),
             jail_id: "nonexistent".to_string(),
             timestamp: chrono::Utc::now().timestamp(),
+            log_line: None,
         })
         .await
         .unwrap();
@@ -414,6 +421,7 @@ async fn test_automatic_ban_executor_closed_rolls_back() {
                 ip: IpAddr::V4(Ipv4Addr::new(31, 31, 31, 31)),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -440,4 +448,52 @@ async fn test_automatic_ban_executor_closed_rolls_back() {
 
     cancel.cancel();
     handle.await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_ban_logs_keep_only_the_bounded_tail_of_the_threshold_window() {
+    use crate::track::failure::handle_failure;
+    use crate::track::fault_support::{FaultStore, rig};
+    use crate::track::state::BanLogLine;
+
+    let store = FaultStore::open();
+    let mut rig = rig(store.store());
+    let params = rig.state.jail_params.get_mut("sshd").unwrap();
+    params.max_retry = 17;
+    params.find_time = 30;
+    params.save_ban_logs = true;
+
+    let ip: IpAddr = "192.0.2.10".parse().unwrap();
+    let key = (ip, "sshd".to_string());
+    let now = chrono::Utc::now().timestamp();
+    let mut failure = Failure {
+        ip,
+        jail_id: "sshd".to_string(),
+        timestamp: now - 60,
+        log_line: Some(BanLogLine::capture("stale")),
+    };
+    handle_failure(failure.clone(), &mut rig.state).await;
+
+    failure.timestamp = now;
+    for i in 0..16 {
+        failure.log_line = Some(BanLogLine::capture(&format!("failure {i}")));
+        handle_failure(failure.clone(), &mut rig.state).await;
+    }
+
+    assert!(rig.state.store.read().ban_logs.is_empty());
+    assert!(rig.executor_rx.try_recv().is_err());
+
+    let long_line = format!("{}é", "x".repeat(4095));
+    failure.log_line = Some(BanLogLine::capture(&long_line));
+    handle_failure(failure, &mut rig.state).await;
+
+    let state = rig.state.store.read();
+    let logs = &state.ban_logs[&key];
+    assert_eq!(logs.banned_at, state.bans[&key].banned_at);
+    assert_eq!(logs.lines.len(), 16);
+    assert_eq!(logs.lines.first().unwrap().text, "failure 1");
+    let last_line = logs.lines.last().unwrap();
+    assert_eq!(last_line.text, "x".repeat(4095));
+    assert!(last_line.truncated);
 }

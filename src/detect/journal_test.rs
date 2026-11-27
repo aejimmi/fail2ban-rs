@@ -26,6 +26,7 @@ fn fake_journalctl(
 /// Build a journal context that runs `/bin/sh <script>` instead of journalctl.
 fn fake_ctx(script: &std::path::Path, tx: mpsc::Sender<Failure>) -> JournalCtx {
     JournalCtx {
+        save_ban_logs: false,
         handoff: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         jail_id: "test".to_string(),
         journalmatch: vec!["_SYSTEMD_UNIT=sshd.service".to_string()],
@@ -43,6 +44,23 @@ async fn recv_within(rx: &mut mpsc::Receiver<Failure>, secs: u64) -> Failure {
         .await
         .expect("timeout waiting for failure")
         .expect("channel closed")
+}
+
+#[tokio::test]
+async fn test_capture_saves_the_matched_journal_line() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut ctx = fake_ctx(std::path::Path::new("/unused"), tx);
+    ctx.save_ban_logs = true;
+    let mut cursor = None;
+    assert!(handle_entry(&ctx, JSON_FAILURE, &mut cursor, &CancellationToken::new()).await);
+
+    let failure = rx.try_recv().unwrap();
+    let line = failure.log_line.unwrap();
+    assert_eq!(
+        line.text,
+        "sshd[1]: Failed password for root from 192.168.1.100 port 22"
+    );
+    assert!(!line.truncated);
 }
 
 #[tokio::test]

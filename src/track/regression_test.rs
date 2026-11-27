@@ -51,6 +51,7 @@ async fn test_reban_requires_full_threshold_after_unban() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -91,6 +92,7 @@ async fn test_reban_requires_full_threshold_after_unban() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + 10 + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -108,6 +110,7 @@ async fn test_reban_requires_full_threshold_after_unban() {
             ip,
             jail_id: "sshd".to_string(),
             timestamp: now + 12,
+            log_line: None,
         })
         .await
         .unwrap();
@@ -215,6 +218,7 @@ async fn test_ban_count_escalates_across_bans() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -230,6 +234,7 @@ async fn test_ban_count_escalates_across_bans() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + 100 + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -282,6 +287,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -331,6 +337,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + 100 + i,
+                log_line: None,
             })
             .await
             .unwrap();

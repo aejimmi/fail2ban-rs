@@ -23,6 +23,7 @@ fn failure(ts: i64) -> Failure {
         ip: IP,
         jail_id: "sshd".to_string(),
         timestamp: ts,
+        log_line: None,
     }
 }
 

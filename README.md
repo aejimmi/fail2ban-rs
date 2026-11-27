@@ -148,6 +148,7 @@ Run `fail2ban-rs list-filters` for the full list.
 ```bash
 fail2ban-rs status                              # show all jails and bans
 fail2ban-rs list-bans                           # sorted table of active bans (--json for JSONL)
+fail2ban-rs ban-logs 1.2.3.4 --jail sshd        # saved log lines for an active ban (JSON)
 fail2ban-rs stats                               # daemon statistics
 fail2ban-rs ban 1.2.3.4 --jail sshd             # manually ban an IP
 fail2ban-rs unban 1.2.3.4 --jail sshd           # manually unban
@@ -160,6 +161,12 @@ systemctl reload fail2ban-rs                    # hot reload via SIGHUP
 ```
 
 `ban` and `unban` return only after the firewall applied the change. A reload counts every failure written during it exactly once and reports success only once the new config is applied. `regex` and `dry-run` never touch the firewall, so patterns can be tested against real logs safely.
+
+Set `save_ban_logs = true` in a jail to retain up to 16 matching lines used to trigger an automatic ban. Lines over 4 KiB are shortened on a UTF-8 boundary and marked `truncated`. The lines survive a restart while the ban is active. Manual bans and bans without saved evidence return an empty array.
+
+For control-socket integrations, send `{"cmd":"ban_logs","ip":"1.2.3.4","jail":"sshd"}`. The response data contains a `lines` array of objects with `text` and `truncated` fields. Treat `text` as untrusted log input.
+
+Saved lines can contain sensitive data. The packaged systemd unit protects the default state directory. If you use a custom state directory or a different service manager, restrict access to `state_dir` and its backups before enabling capture.
 
 ## Performance
 

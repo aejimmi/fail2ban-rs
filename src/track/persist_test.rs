@@ -300,6 +300,55 @@ fn test_truncated_wal_file_does_not_error_on_open() {
 // Schema versioning / migration
 // ---------------------------------------------------------------------------
 
+/// Store layout before the optional evidence collection was added.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Replayable, Transactable)]
+struct PreEvidenceBanState {
+    #[etch(collection = 0)]
+    bans: HashMap<(IpAddr, String), BanRecord>,
+    #[etch(collection = 1)]
+    ban_counts: HashMap<IpAddr, BanCount>,
+    #[etch(collection = 2)]
+    meta: HashMap<String, u64>,
+}
+
+#[test]
+fn test_store_with_evidence_collection_loads_existing_ban_and_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let ip: IpAddr = "203.0.113.7".parse().unwrap();
+    let key = (ip, "sshd".to_string());
+    let ban = BanRecord {
+        ip,
+        jail_id: key.1.clone(),
+        banned_at: 100,
+        expires_at: Some(700),
+    };
+    let count = BanCount {
+        count: 5,
+        last_ban: 100,
+    };
+    {
+        let old = Store::<PreEvidenceBanState, WalBackend<PreEvidenceBanState>>::open_wal(
+            dir.path().to_path_buf(),
+        )
+        .unwrap();
+        old.set_snapshot_threshold(1);
+        old.write(|tx| {
+            tx.bans.put(key.clone(), ban.clone())?;
+            tx.ban_counts.put(ip, count)?;
+            tx.meta.put("schema_version".to_string(), SCHEMA_VERSION)?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    let store = open_ban_store(dir.path().to_path_buf()).unwrap();
+    let state = store.read();
+    assert_eq!(state.bans.get(&key), Some(&ban));
+    assert_eq!(state.ban_counts.get(&ip), Some(&count));
+    assert!(state.ban_logs.is_empty());
+    assert!(!store.replay_report().has_loss());
+}
+
 /// A local duplicate of the OLD `BanState` layout: `ban_counts` held a bare
 /// `u32` and there was no `meta` (schema-version) collection.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Replayable, Transactable)]

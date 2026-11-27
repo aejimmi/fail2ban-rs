@@ -6,6 +6,7 @@ use crate::config::JailConfig;
 
 fn base_params() -> JailParams {
     JailParams {
+        save_ban_logs: false,
         max_retry: 3,
         find_time: 600,
         ban_time: 60,

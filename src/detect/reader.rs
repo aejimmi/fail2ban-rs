@@ -21,6 +21,7 @@ use crate::detect::matcher::JailMatcher;
 use crate::detect::resume::{FilePosition, open_log};
 use crate::detect::watcher::{Failure, MAX_LINE_LEN};
 use crate::text::lossy;
+use crate::track::state::BanLogLine;
 
 /// Shared, move-by-value state for a blocking read loop.
 ///
@@ -33,6 +34,7 @@ struct ReadCtx {
     date_parser: DateParser,
     ignore_list: IgnoreList,
     tx: mpsc::Sender<Failure>,
+    save_ban_logs: bool,
 }
 
 impl ReadCtx {
@@ -61,6 +63,7 @@ impl ReadCtx {
             ip: m.ip,
             jail_id: self.jail_id.clone(),
             timestamp,
+            log_line: self.save_ban_logs.then(|| BanLogLine::capture(line)),
         };
         self.tx.blocking_send(failure).is_ok()
     }
@@ -129,6 +132,7 @@ pub(crate) fn read_loop(
     tx: mpsc::Sender<Failure>,
     cancel: CancellationToken,
     resume: Option<FilePosition>,
+    save_ban_logs: bool,
 ) -> Option<FilePosition> {
     let Some(file) = open_log(&jail_id, &log_path, resume.as_ref(), &cancel) else {
         return Some(FilePosition::absent(log_path));
@@ -139,6 +143,7 @@ pub(crate) fn read_loop(
         date_parser,
         ignore_list,
         tx,
+        save_ban_logs,
     };
     let mut state = TailState {
         identity: handle_identity(file.get_ref(), &log_path),

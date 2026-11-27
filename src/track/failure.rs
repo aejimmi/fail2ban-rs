@@ -1,6 +1,6 @@
 //! Failure handling — count failures and ban on threshold.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 #[cfg(not(feature = "maxmind"))]
 use tracing::info;
@@ -13,7 +13,7 @@ use crate::track::execute::execute_ban;
 use crate::track::tracker_state::{FailKey, FailState, TrackerState};
 
 /// Record a failure and, if the jail's threshold is reached, trigger a ban.
-pub(super) async fn handle_failure(failure: Failure, s: &mut TrackerState) {
+pub(super) async fn handle_failure(mut failure: Failure, s: &mut TrackerState) {
     s.counters.total_failures += 1;
     incr_jail_counter(&mut s.counters.jail_failures, &failure.jail_id);
 
@@ -31,14 +31,15 @@ pub(super) async fn handle_failure(failure: Failure, s: &mut TrackerState) {
         return;
     }
 
-    if record_failure(&failure, key, s) {
+    if record_failure(&mut failure, key, s) {
         ban_on_threshold(failure, s).await;
     }
 }
 
 /// Push the failure into its (ip, jail) window; returns whether the jail's
 /// threshold is now reached. Unknown jails are logged and ignored.
-fn record_failure(failure: &Failure, key: FailKey, s: &mut TrackerState) -> bool {
+fn record_failure(failure: &mut Failure, key: FailKey, s: &mut TrackerState) -> bool {
+    const MAX_LOG_LINES: usize = 16;
     let Some(params) = s.jail_params.get(&failure.jail_id) else {
         warn!(
             jail = %failure.jail_id,
@@ -50,8 +51,16 @@ fn record_failure(failure: &Failure, key: FailKey, s: &mut TrackerState) -> bool
     let (max_retry, find_time) = (params.max_retry, params.find_time);
     let fail_state = s.failures.entry(key).or_insert_with(|| FailState {
         timestamps: CircularTimestamps::new(max_retry as usize),
+        log_lines: VecDeque::new(),
     });
     fail_state.timestamps.push(failure.timestamp);
+    if params.save_ban_logs && (failure.log_line.is_some() || !fail_state.log_lines.is_empty()) {
+        let limit = fail_state.timestamps.capacity().min(MAX_LOG_LINES);
+        if fail_state.log_lines.len() == limit {
+            fail_state.log_lines.pop_front();
+        }
+        fail_state.log_lines.push_back(failure.log_line.take());
+    }
     fail_state.timestamps.threshold_reached(find_time)
 }
 

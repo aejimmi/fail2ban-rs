@@ -35,7 +35,7 @@ use tokio::sync::oneshot;
 
 use crate::config::JailConfig;
 use crate::enforce::FirewallCmd;
-use crate::track::state::BanRecord;
+use crate::track::state::{BanLogLine, BanRecord};
 
 /// Builds a firewall command from one jail's active bans, as sent in
 /// [`TrackerCmd::ForwardFirewall`].
@@ -50,6 +50,12 @@ pub enum TrackerCmd {
     /// Return all active bans.
     QueryBans {
         respond: oneshot::Sender<Vec<BanRecord>>,
+    },
+    /// Return the captured lines for one active ban.
+    QueryBanLogs {
+        ip: IpAddr,
+        jail_id: String,
+        respond: oneshot::Sender<Option<Vec<BanLogLine>>>,
     },
     /// Manually ban an IP.
     ManualBan {

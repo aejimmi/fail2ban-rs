@@ -16,6 +16,7 @@ RestartSec=5s
 # Systemd-managed directories (auto-created on start, cleaned on stop)
 RuntimeDirectory=fail2ban-rs
 StateDirectory=fail2ban-rs
+StateDirectoryMode=0700
 
 # Logging to journal
 StandardOutput=journal

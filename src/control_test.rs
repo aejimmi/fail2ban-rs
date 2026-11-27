@@ -149,6 +149,7 @@ async fn all_request_variants_through_socket() {
                 Request::Ban { ip, jail } => Response::ok(format!("banned {ip} in {jail}")),
                 Request::Unban { ip, jail } => Response::ok(format!("unbanned {ip} from {jail}")),
                 Request::Reload => Response::ok("reloaded"),
+                Request::BanLogs { .. } => Response::ok_data(serde_json::json!({"lines": []})),
                 Request::Stats => Response::ok_data(serde_json::json!({"uptime": 42})),
             };
             let _ = cmd.respond.send(response);

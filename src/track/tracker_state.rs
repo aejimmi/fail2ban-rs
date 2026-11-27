@@ -20,6 +20,7 @@ use crate::track::manual::ManualBanOutcome;
 #[cfg(feature = "maxmind")]
 use crate::track::maxmind::MaxmindState;
 use crate::track::persist::BanState;
+use crate::track::state::BanLogLine;
 use crate::track::unban::UnbanOutcome;
 
 /// Key identifying a failure/ban stream: the offending IP and the jail id.
@@ -29,6 +30,8 @@ pub(super) type FailKey = (IpAddr, String);
 pub(super) struct FailState {
     /// Ring buffer of recent failure timestamps for this (ip, jail).
     pub(super) timestamps: CircularTimestamps,
+    /// Bounded tail of the timestamp window, with an entry per captured failure.
+    pub(super) log_lines: VecDeque<Option<BanLogLine>>,
 }
 
 /// Aggregate ban/unban/failure counters, both global and per-jail.

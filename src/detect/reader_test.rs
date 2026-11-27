@@ -458,6 +458,7 @@ fn test_drain_reader_flushes_complete_and_partial() {
         date_parser: DateParser::new(DateFormat::Syslog).unwrap(),
         ignore_list: IgnoreList::new(&[], false).unwrap(),
         tx,
+        save_ban_logs: false,
     };
 
     let file = std::fs::File::open(&path).unwrap();

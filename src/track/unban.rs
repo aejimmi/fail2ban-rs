@@ -76,6 +76,9 @@ pub(super) fn handle_unban_outcome(outcome: UnbanOutcome, s: &mut TrackerState) 
         s.store
             .write(|tx| {
                 tx.bans.delete(&key);
+                if tx.ban_logs.contains(&key) {
+                    tx.ban_logs.delete(&key);
+                }
                 Ok(())
             })
             .map_err(|e| Error::persistence(format!("removing ban after firewall unban: {e}")))

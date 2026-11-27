@@ -99,6 +99,10 @@ pub struct JailConfig {
     /// Patterns with `<HOST>` placeholder.
     pub filter: Vec<String>,
 
+    /// Save the matching log lines for automatically triggered bans.
+    #[serde(default)]
+    pub save_ban_logs: bool,
+
     /// Number of failures before banning.
     #[serde(default = "default_max_retry")]
     pub max_retry: u32,
@@ -327,6 +331,7 @@ impl Default for JailConfig {
             log_path: PathBuf::new(),
             date_format: default_date_format(),
             filter: vec![],
+            save_ban_logs: false,
             max_retry: default_max_retry(),
             find_time: default_find_time(),
             ban_time: default_ban_time(),

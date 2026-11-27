@@ -23,6 +23,7 @@ use crate::detect::ignore::IgnoreList;
 use crate::detect::matcher::JailMatcher;
 use crate::detect::reader::read_loop;
 use crate::detect::resume::{FilePosition, ResumePoint};
+use crate::track::state::BanLogLine;
 
 /// A detected authentication failure.
 #[derive(Debug, Clone)]
@@ -33,6 +34,8 @@ pub struct Failure {
     pub jail_id: String,
     /// Unix timestamp from the log line.
     pub timestamp: i64,
+    /// The matched line, when capture is enabled.
+    pub log_line: Option<BanLogLine>,
 }
 
 /// How long a cancelled watcher keeps forwarding already-read failures
@@ -108,6 +111,7 @@ pub async fn run_from(
         phase,
         resume,
         Arc::new(AtomicBool::new(false)),
+        false,
     )
     .await
 }
@@ -126,6 +130,7 @@ pub(crate) async fn run_supervised_from(
     phase: &'static str,
     resume: Option<ResumePoint>,
     handoff: Arc<AtomicBool>,
+    save_ban_logs: bool,
 ) -> Option<ResumePoint> {
     info!(phase, jail = %jail_id, path = %log_path.display(), "watcher started");
 
@@ -143,6 +148,7 @@ pub(crate) async fn run_supervised_from(
             line_tx,
             rc,
             start,
+            save_ban_logs,
         )
     });
 
