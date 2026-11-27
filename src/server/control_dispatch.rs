@@ -21,6 +21,8 @@ use super::reload::{ReloadContext, reload_config};
 pub(super) enum TrackerRequest {
     /// List active bans.
     ListBans,
+    /// Show saved log lines for a single ban.
+    BanLogs { ip: IpAddr, jail: String },
     /// Manually ban `ip` in `jail` for `ban_time` seconds.
     Ban {
         ip: IpAddr,
@@ -49,6 +51,7 @@ pub(super) fn classify_request(request: Request, config: &Config) -> Dispatch {
     match request {
         Request::Status => Dispatch::Immediate(Response::ok("fail2ban-rs is running")),
         Request::ListBans => Dispatch::Tracker(TrackerRequest::ListBans),
+        Request::BanLogs { ip, jail } => Dispatch::Tracker(TrackerRequest::BanLogs { ip, jail }),
         Request::Ban { ip, jail } => match resolve_ban_time(config, &jail) {
             Ok(ban_time) => Dispatch::Tracker(TrackerRequest::Ban { ip, jail, ban_time }),
             Err(msg) => Dispatch::Immediate(Response::error(msg)),
@@ -125,6 +128,7 @@ pub(super) async fn forward_to_tracker(
 ) -> Response {
     let result = match req {
         TrackerRequest::ListBans => list_bans(tracker_cmd_tx).await,
+        TrackerRequest::BanLogs { ip, jail } => ban_logs(tracker_cmd_tx, ip, jail).await,
         TrackerRequest::Ban { ip, jail, ban_time } => {
             manual_ban(tracker_cmd_tx, ip, jail, ban_time).await
         }
@@ -190,6 +194,23 @@ async fn list_bans(tracker_cmd_tx: &mpsc::Sender<TrackerCmd>) -> Result<Response
         })
         .collect();
     Ok(Response::ok_data(serde_json::json!({ "bans": data })))
+}
+
+async fn ban_logs(
+    tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
+    ip: IpAddr,
+    jail: String,
+) -> Result<Response, Response> {
+    let lines = ask_tracker(tracker_cmd_tx, |respond| TrackerCmd::QueryBanLogs {
+        ip,
+        jail_id: jail.clone(),
+        respond,
+    })
+    .await?;
+    Ok(match lines {
+        Some(lines) => Response::ok_data(serde_json::json!({ "lines": lines })),
+        None => Response::error(crate::error::Error::NotBanned { ip, jail }.to_string()),
+    })
 }
 
 async fn stats(tracker_cmd_tx: &mpsc::Sender<TrackerCmd>) -> Result<Response, Response> {

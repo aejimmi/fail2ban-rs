@@ -282,6 +282,7 @@ async fn test_get_stats_via_cmd() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();

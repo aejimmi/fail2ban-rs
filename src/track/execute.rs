@@ -11,7 +11,7 @@ use tracing::warn;
 
 use crate::enforce::FirewallCmd;
 use crate::error::{Error, Result};
-use crate::track::persist::BanCount;
+use crate::track::persist::{BanCount, BanLogs};
 use crate::track::state::BanRecord;
 use crate::track::tracker_state::{FailKey, TrackerState};
 
@@ -133,9 +133,31 @@ fn persist_ban(
     ban: &BanRecord,
     new_ban_count: Option<u32>,
 ) -> Result<()> {
+    let logs = new_ban_count
+        .and_then(|_| s.failures.get(key))
+        .map(|failures| {
+            failures
+                .log_lines
+                .iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .filter(|lines| !lines.is_empty());
     s.store
         .write(|tx| {
             tx.bans.put(key.clone(), ban.clone())?;
+            if let Some(lines) = logs {
+                tx.ban_logs.put(
+                    key.clone(),
+                    BanLogs {
+                        banned_at: ban.banned_at,
+                        lines,
+                    },
+                )?;
+            } else if tx.ban_logs.contains(key) {
+                tx.ban_logs.delete(key);
+            }
             if let Some(count) = new_ban_count {
                 // Stamp the ban timestamp so the sweep can decay stale counters.
                 tx.ban_counts.put(
@@ -171,6 +193,9 @@ pub(super) fn rollback_ban(
     }
     if let Err(e) = s.store.write(|tx| {
         tx.bans.delete(&key);
+        if tx.ban_logs.contains(&key) {
+            tx.ban_logs.delete(&key);
+        }
         Ok(())
     }) {
         warn!(error = %e, "rollback persist failed: {e}");

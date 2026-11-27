@@ -20,6 +20,7 @@ fn ctx(tx: mpsc::Sender<Failure>) -> ReadCtx {
         date_parser: DateParser::new(DateFormat::Syslog).unwrap(),
         ignore_list: IgnoreList::new(&[], false).unwrap(),
         tx,
+        save_ban_logs: false,
     }
 }
 

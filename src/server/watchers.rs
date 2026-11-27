@@ -115,6 +115,7 @@ fn spawn_one(
         phase,
         start,
         handoff,
+        plan.jail.save_ban_logs,
     ))
 }
 
@@ -138,6 +139,7 @@ fn spawn_journal(
         phase,
         start,
         handoff,
+        plan.jail.save_ban_logs,
     ))
 }
 

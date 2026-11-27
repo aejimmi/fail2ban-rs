@@ -18,6 +18,7 @@ async fn run_fake(body: &str) -> (Option<String>, Vec<String>) {
     .unwrap();
     let (tx, _rx) = mpsc::channel(16);
     let ctx = JournalCtx {
+        save_ban_logs: false,
         handoff: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         jail_id: "test".to_string(),
         journalmatch: Vec::new(),

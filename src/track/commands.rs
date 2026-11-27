@@ -24,6 +24,22 @@ pub(super) async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
         TrackerCmd::QueryBans { respond } => {
             reply(respond, s.store.read().bans.values().cloned().collect());
         }
+        TrackerCmd::QueryBanLogs {
+            ip,
+            jail_id,
+            respond,
+        } => {
+            let key = (ip, jail_id);
+            let store = s.store.read();
+            let lines = store.bans.get(&key).map(|ban| {
+                store
+                    .ban_logs
+                    .get(&key)
+                    .filter(|logs| logs.banned_at == ban.banned_at)
+                    .map_or_else(Vec::new, |logs| logs.lines.clone())
+            });
+            reply(respond, lines);
+        }
         TrackerCmd::ManualBan {
             ip,
             jail_id,
@@ -143,8 +159,15 @@ fn apply_config_update(
         "updating configurations"
     );
     let new_params = build_jail_params(jails);
-    s.failures
-        .retain(|(_, jail_id), _| new_params.contains_key(jail_id));
+    s.failures.retain(|(_, jail_id), failures| {
+        let Some(params) = new_params.get(jail_id) else {
+            return false;
+        };
+        if !params.save_ban_logs {
+            failures.log_lines.clear();
+        }
+        true
+    });
     s.jail_params = new_params;
     s.ban_count_decay = global.ban_count_decay;
     #[cfg(feature = "maxmind")]

@@ -36,6 +36,8 @@ pub enum Request {
     Status,
     /// List all active bans.
     ListBans,
+    /// Get saved log lines for one active ban.
+    BanLogs { ip: IpAddr, jail: String },
     /// Ban an IP in a specific jail.
     Ban { ip: IpAddr, jail: String },
     /// Unban an IP from a specific jail.

@@ -29,6 +29,7 @@ pub(crate) fn test_jail_config() -> JailConfig {
         log_path: "/tmp/test.log".into(),
         date_format: crate::detect::date::DateFormat::Syslog,
         filter: vec!["from <HOST>".to_string()],
+        save_ban_logs: false,
         max_retry: 3,
         find_time: 600,
         ban_time: 60,

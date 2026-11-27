@@ -24,6 +24,7 @@ use crate::detect::journal_proc::{StderrCapture, cursor_rejected, reap};
 use crate::detect::matcher::JailMatcher;
 use crate::detect::resume::ResumePoint;
 use crate::detect::watcher::Failure;
+use crate::track::state::BanLogLine;
 
 /// Program used to stream the journal.
 const JOURNALCTL: &str = "journalctl";
@@ -41,6 +42,7 @@ pub(crate) struct JournalCtx {
     /// Arguments placed before the journalctl flags (empty in production).
     pub(crate) prefix_args: Vec<OsString>,
     pub(crate) handoff: Arc<AtomicBool>,
+    pub(crate) save_ban_logs: bool,
 }
 
 /// Run the journal watcher for a single jail, starting at the journal tail.
@@ -101,6 +103,7 @@ pub async fn run_from(
         phase,
         resume,
         Arc::new(AtomicBool::new(false)),
+        false,
     )
     .await
 }
@@ -119,6 +122,7 @@ pub(crate) async fn run_supervised_from(
     phase: &'static str,
     resume: Option<ResumePoint>,
     handoff: Arc<AtomicBool>,
+    save_ban_logs: bool,
 ) -> Option<ResumePoint> {
     info!(phase, jail = %jail_id, "journal watcher started");
     let ctx = JournalCtx {
@@ -131,6 +135,7 @@ pub(crate) async fn run_supervised_from(
         program: OsString::from(JOURNALCTL),
         prefix_args: Vec::new(),
         handoff,
+        save_ban_logs,
     };
     let cursor = resume.and_then(ResumePoint::into_journal_cursor);
     let cursor = supervise(&ctx, cursor, &cancel).await;
@@ -374,6 +379,7 @@ async fn process_line(
         ip: m.ip,
         jail_id: ctx.jail_id.clone(),
         timestamp,
+        log_line: ctx.save_ban_logs.then(|| BanLogLine::capture(line)),
     };
     tokio::select! {
         biased;

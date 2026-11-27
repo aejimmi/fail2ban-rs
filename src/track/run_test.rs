@@ -52,6 +52,7 @@ async fn test_maxmind_asn_att() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -110,6 +111,7 @@ async fn test_maxmind_country_uk_ipv6() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -168,6 +170,7 @@ async fn test_maxmind_city_sweden() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -265,6 +268,7 @@ async fn test_same_ip_different_jails_tracked_independently() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -287,6 +291,7 @@ async fn test_same_ip_different_jails_tracked_independently() {
                 ip,
                 jail_id: "nginx".to_string(),
                 timestamp: now + 10 + i,
+                log_line: None,
             })
             .await
             .unwrap();

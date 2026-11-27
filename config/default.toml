@@ -26,6 +26,7 @@ filter = [
 port = ["22"]
 protocol = "tcp"
 max_retry = 5
+# save_ban_logs = true  # retain matching lines for active automatic bans
 find_time = "10m"
 ban_time = "1h"
 # Firewall backend: "nftables", "iptables", "ipset", or a script table.

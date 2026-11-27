@@ -86,6 +86,9 @@ fn purge_expired(store: &BanStore, keys: &[(IpAddr, String)]) {
     let result = store.write(|tx| {
         for key in keys {
             tx.bans.delete(key);
+            if tx.ban_logs.contains(key) {
+                tx.ban_logs.delete(key);
+            }
         }
         Ok(())
     });

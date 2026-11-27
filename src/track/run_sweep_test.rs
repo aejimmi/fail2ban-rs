@@ -61,6 +61,7 @@ impl LoopHarness {
                 ip: Ipv4Addr::new(198, 51, 100, octet).into(),
                 jail_id: "sshd".to_string(),
                 timestamp: chrono::Utc::now().timestamp() - 120,
+                log_line: None,
             })
             .await
             .unwrap();

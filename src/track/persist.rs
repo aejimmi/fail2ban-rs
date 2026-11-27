@@ -1,8 +1,8 @@
 //! Etch-backed persistent ban state.
 //!
-//! Three collections: active bans keyed by (ip, jail), per-IP ban counts for
-//! ban-time escalation (each carrying its last-ban timestamp so counts can
-//! decay), and a small metadata map holding the on-disk schema version.
+//! Active bans and optional evidence use (ip, jail) keys. Per-IP escalation
+//! counts include the last-ban timestamp so they can decay. A metadata map
+//! holds the on-disk schema version.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -11,7 +11,7 @@ use etchdb::{Replayable, Store, Transactable, WalBackend};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::track::state::BanRecord;
+use crate::track::state::{BanLogLine, BanRecord};
 
 /// On-disk schema version for [`BanState`].
 ///
@@ -35,6 +35,15 @@ pub struct BanCount {
     pub last_ban: i64,
 }
 
+/// Evidence tied to a particular active ban.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BanLogs {
+    /// Matches the active ban timestamp.
+    pub banned_at: i64,
+    /// The most recent captured lines that contributed to the threshold.
+    pub lines: Vec<BanLogLine>,
+}
+
 /// Persistent ban state backed by etch WAL.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Replayable, Transactable)]
 pub struct BanState {
@@ -47,6 +56,12 @@ pub struct BanState {
     /// Store metadata (schema version, etc.) keyed by a short string.
     #[etch(collection = 2)]
     pub meta: HashMap<String, u64>,
+    /// Optional evidence for automatic bans, stored separately to preserve
+    /// the original ban encoding. Etch persists this collection independently
+    /// of the legacy whole-state serde encoding.
+    #[etch(collection = 3)]
+    #[serde(skip)]
+    pub ban_logs: HashMap<(IpAddr, String), BanLogs>,
 }
 
 /// Open the WAL-backed ban store, verifying (or stamping) the schema version.

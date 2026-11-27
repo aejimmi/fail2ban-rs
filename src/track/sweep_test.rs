@@ -57,6 +57,7 @@ async fn test_unban_timer_fires() {
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
+                log_line: None,
             })
             .await
             .unwrap();
@@ -161,6 +162,7 @@ async fn test_restored_bans_populate_unban_queue() {
 #[test]
 fn test_prune_stale_failures_drops_out_of_window_entries() {
     let mk_params = |find_time: i64| JailParams {
+        save_ban_logs: false,
         max_retry: 3,
         find_time,
         ban_time: 60,
@@ -184,19 +186,28 @@ fn test_prune_stale_failures_drops_out_of_window_entries() {
     fresh.push(now - 100); // within window
     failures.insert(
         (fresh_ip, "sshd".to_string()),
-        FailState { timestamps: fresh },
+        FailState {
+            timestamps: fresh,
+            log_lines: VecDeque::new(),
+        },
     );
     let mut stale = CircularTimestamps::new(3);
     stale.push(now - 1000); // outside 600s window
     failures.insert(
         (stale_ip, "sshd".to_string()),
-        FailState { timestamps: stale },
+        FailState {
+            timestamps: stale,
+            log_lines: VecDeque::new(),
+        },
     );
     let mut orphan = CircularTimestamps::new(3);
     orphan.push(now); // jail no longer configured
     failures.insert(
         (orphan_ip, "gone".to_string()),
-        FailState { timestamps: orphan },
+        FailState {
+            timestamps: orphan,
+            log_lines: VecDeque::new(),
+        },
     );
 
     prune_stale_failures(&mut failures, &jail_params, now);

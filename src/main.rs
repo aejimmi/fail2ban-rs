@@ -58,6 +58,15 @@ enum Command {
         json: bool,
     },
 
+    /// Show the saved log lines for an active ban as JSON
+    BanLogs {
+        /// Banned IP address
+        ip: IpAddr,
+        /// Jail name
+        #[arg(short, long)]
+        jail: String,
+    },
+
     /// Show daemon statistics
     Stats,
 
@@ -123,6 +132,9 @@ async fn main() -> Result<()> {
         Command::Run => run_daemon(path).await?,
         Command::Status => print_response(&send_control(path, Request::Status).await?),
         Command::ListBans { json } => list_bans(path, json).await?,
+        Command::BanLogs { ip, jail } => {
+            print_response(&send_control(path, Request::BanLogs { ip, jail }).await?);
+        }
         Command::Stats => print_response(&send_control(path, Request::Stats).await?),
         Command::Ban { ip, jail } => {
             print_response(&send_control(path, Request::Ban { ip, jail }).await?);

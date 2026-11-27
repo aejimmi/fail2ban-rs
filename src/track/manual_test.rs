@@ -124,6 +124,7 @@ async fn test_manual_ban_hung_firewall_keeps_tracker_responsive() {
             ip: ip(2),
             jail_id: "sshd".to_string(),
             timestamp: now + i,
+            log_line: None,
         };
         h.failure_tx.send(failure).await.unwrap();
     }

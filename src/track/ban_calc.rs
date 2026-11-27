@@ -9,6 +9,7 @@ use crate::config::JailConfig;
 /// Per-jail parameters relevant to ban calculations.
 pub(crate) struct JailParams {
     pub(crate) max_retry: u32,
+    pub(crate) save_ban_logs: bool,
     pub(crate) find_time: i64,
     pub(crate) ban_time: i64,
     pub(crate) webhook: Option<String>,
@@ -53,6 +54,7 @@ pub(crate) fn build_jail_params(
                 name.clone(),
                 JailParams {
                     max_retry: cfg.max_retry,
+                    save_ban_logs: cfg.save_ban_logs,
                     find_time: cfg.find_time,
                     ban_time: cfg.ban_time,
                     webhook: cfg.webhook.clone(),
