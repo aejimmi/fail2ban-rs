@@ -121,6 +121,7 @@ async fn reload_with_replacement(succeed: bool) -> (crate::error::Result<()>, Ve
         &mut watchers,
         &failure_tx,
         None,
+        None,
     )
     .await;
     watchers.stop().await;
@@ -235,4 +236,39 @@ async fn test_update_tracker_config_requires_application_ack() {
     );
     respond.send(()).expect("ack");
     assert!(waiter.await.expect("join").is_ok());
+}
+
+#[tokio::test]
+async fn unreadable_abuseipdb_credentials_reject_reload_before_firewall_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let missing_key = dir.path().join("missing.key");
+    let mut config = Config::parse(&sshd_toml(false)).unwrap();
+    let candidate = format!(
+        "{}\n[global.abuseipdb]\napi_key_file = {:?}\n[jail.sshd.abuseipdb]\ncategories = [18, 22]\ndescription = \"SSH brute force\"\n",
+        sshd_toml(false).replace("enabled = true", "enabled = true\nbackend = \"iptables\""),
+        missing_key,
+    );
+    std::fs::write(&path, candidate).unwrap();
+    let (executor, mut executor_rx) = mpsc::channel(4);
+    let (tracker, mut tracker_rx) = mpsc::channel(4);
+    let (failures, _failure_rx) = mpsc::channel(4);
+    let mut watchers = Watchers::default();
+
+    let err = reload_config(
+        &path,
+        &executor,
+        &tracker,
+        &mut config,
+        &mut watchers,
+        &failures,
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("AbuseIPDB key file"), "{err}");
+    assert!(config.global.abuseipdb.is_none());
+    assert!(executor_rx.try_recv().is_err());
+    assert!(tracker_rx.try_recv().is_err());
 }

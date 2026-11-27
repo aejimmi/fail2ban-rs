@@ -44,6 +44,7 @@ async fn test_bans_after_threshold() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -112,6 +113,7 @@ async fn test_reban_on_restart_false_still_bans_new_offenders() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -176,6 +178,7 @@ async fn test_no_ban_below_threshold() {
     for i in 0..2 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -233,6 +236,7 @@ async fn test_no_ban_outside_find_time() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + (i * 50),
@@ -286,6 +290,7 @@ async fn test_already_banned_ip_ignored() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -305,6 +310,7 @@ async fn test_already_banned_ip_ignored() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + 10 + i,
@@ -359,6 +365,7 @@ async fn test_unknown_jail_failure_ignored() {
     // Send failure for a jail that doesn't exist.
     failure_tx
         .send(Failure {
+            timestamp_from_log: false,
             ip: IpAddr::V4(Ipv4Addr::new(30, 30, 30, 30)),
             jail_id: "nonexistent".to_string(),
             timestamp: chrono::Utc::now().timestamp(),
@@ -411,6 +418,7 @@ async fn test_automatic_ban_executor_closed_rolls_back() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip: IpAddr::V4(Ipv4Addr::new(31, 31, 31, 31)),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,

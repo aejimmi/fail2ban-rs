@@ -144,6 +144,7 @@ async fn test_control_request_reload_swaps_config_and_dispatches_update_to_track
     let mut watchers = Watchers::default();
 
     let mut ctx = ReloadContext {
+        reporter: None,
         config_path: &config_path,
         executor_tx: &executor_tx,
         config: &mut config,
@@ -203,6 +204,7 @@ async fn test_control_request_reload_returns_error_and_leaves_config_unchanged_o
     let mut watchers = Watchers::default();
 
     let mut ctx = ReloadContext {
+        reporter: None,
         config_path: &config_path,
         executor_tx: &executor_tx,
         config: &mut config,

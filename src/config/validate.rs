@@ -38,7 +38,47 @@ impl Config {
         for (name, jail) in &self.jail {
             Self::validate_jail(name, jail, &self.global)?;
         }
+        self.validate_abuseipdb()?;
         self.validate_set_name_collisions()
+    }
+
+    fn validate_abuseipdb(&self) -> Result<()> {
+        if let Some(config) = &self.global.abuseipdb
+            && !config.api_key_file.is_absolute()
+        {
+            return Err(Error::config(
+                "global.abuseipdb.api_key_file must be absolute",
+            ));
+        }
+        for (name, jail) in self.enabled_jails() {
+            let Some(report) = &jail.abuseipdb else {
+                continue;
+            };
+            if self.global.abuseipdb.is_none() {
+                return Err(Error::config(format!(
+                    "jail '{name}' requires global.abuseipdb"
+                )));
+            }
+            if matches!(jail.backend, Backend::Script { .. }) {
+                return Err(Error::config(format!(
+                    "jail '{name}': AbuseIPDB requires a native firewall backend"
+                )));
+            }
+            if report.categories.is_empty()
+                || report.categories.len() > 30
+                || report.categories.iter().any(|id| !(1..=23).contains(id))
+            {
+                return Err(Error::config(format!(
+                    "jail '{name}': invalid AbuseIPDB categories"
+                )));
+            }
+            if report.description.trim().is_empty() || report.description.len() > 1024 {
+                return Err(Error::config(format!(
+                    "jail '{name}': invalid AbuseIPDB description"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Reject pairs of enabled jails whose generated set names collide.

@@ -279,6 +279,7 @@ async fn test_get_stats_via_cmd() {
     for i in 0..2 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,

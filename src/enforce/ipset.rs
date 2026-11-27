@@ -11,6 +11,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{debug, warn};
 
@@ -138,6 +139,7 @@ fn parse_members(listing: &str) -> HashSet<IpAddr> {
 /// ipset backend — uses `ipset`, `iptables`, and `ip6tables` resolved at
 /// startup.
 pub struct IpsetBackend {
+    attached: [AtomicBool; 2],
     /// Absolute path to `ipset`.
     ipset_path: PathBuf,
     /// Absolute path to `iptables`.
@@ -162,6 +164,7 @@ impl IpsetBackend {
         chain: String,
     ) -> Self {
         Self {
+            attached: Default::default(),
             ipset_path,
             iptables_path,
             ip6tables_path,
@@ -251,6 +254,9 @@ impl IpsetBackend {
 #[async_trait::async_trait]
 impl FirewallBackend for IpsetBackend {
     async fn init(&self, jail: &str, ports: &[String], protocol: &str) -> Result<()> {
+        for attached in &self.attached {
+            attached.store(false, Ordering::Relaxed);
+        }
         self.store_rule_spec(ports, protocol);
         self.create_sets(jail).await?;
 
@@ -260,6 +266,9 @@ impl FirewallBackend for IpsetBackend {
             let check = match_rule_args("-C", &self.chain, &set, &spec);
             let insert = match_rule_args("-I", &self.chain, &set, &spec);
             let Err(e) = cmd::ensure_rule(cmd, label, &check, &insert).await else {
+                if let Some(attached) = self.attached.get(usize::from(v6)) {
+                    attached.store(true, Ordering::Relaxed);
+                }
                 continue;
             };
             // IPv6 stays best-effort: hosts without IPv6 (no ip6tables or no
@@ -277,6 +286,9 @@ impl FirewallBackend for IpsetBackend {
     }
 
     async fn teardown(&self, jail: &str) -> Result<()> {
+        for attached in &self.attached {
+            attached.store(false, Ordering::Relaxed);
+        }
         // Rules first: ipset refuses to destroy a set a netfilter rule still
         // references. Flush before destroy so a lingering reference (e.g. a
         // duplicate rule from an unclean shutdown) still leaves no stale bans.
@@ -367,6 +379,12 @@ impl FirewallBackend for IpsetBackend {
         let mut all = self.list_members(set_name(jail, false)).await?;
         all.extend(self.list_members(set_name(jail, true)).await?);
         Ok(Some(all))
+    }
+
+    fn reportable(&self, ip: IpAddr) -> bool {
+        self.attached
+            .get(usize::from(ip.is_ipv6()))
+            .is_some_and(|attached| attached.load(Ordering::Relaxed))
     }
 
     fn name(&self) -> &'static str {

@@ -16,6 +16,7 @@ fn default_jail_configs() -> HashMap<String, JailConfig> {
 
 fn test_jail_config(restore: bool) -> JailConfig {
     JailConfig {
+        abuseipdb: None,
         enabled: true,
         log_path: "/tmp/test.log".into(),
         date_format: crate::detect::date::DateFormat::Syslog,

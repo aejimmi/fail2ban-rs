@@ -76,6 +76,9 @@ async fn ban_on_threshold(failure: Failure, s: &mut TrackerState) {
         &failure.jail_id,
         effective_ban_time,
         Some(count + 1),
+        crate::enforce::ReportObservation {
+            timestamp: failure.timestamp_from_log.then_some(failure.timestamp),
+        },
         s,
     )
     .await;

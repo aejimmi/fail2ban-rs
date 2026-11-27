@@ -459,6 +459,9 @@ async fn test_init_tolerates_a_failed_ipv6_rule_insertion() {
     assert_eq!(f.ipset().len(), 2, "sets must be kept");
     assert_eq!(f.iptables().len(), 2);
     assert_eq!(f.ip6tables().len(), 2);
+    f.backend.ban(&v6(), "sshd").await.unwrap();
+    assert!(!f.backend.reportable(v6()));
+    assert!(f.backend.reportable(v4()));
 }
 
 #[test]

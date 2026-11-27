@@ -54,6 +54,7 @@ async fn test_unban_timer_fires() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,

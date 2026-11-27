@@ -6,5 +6,6 @@ mod types;
 mod validate;
 
 pub use types::{
-    Backend, Config, GlobalConfig, JailConfig, LogBackend, LoggingConfig, MaxmindField,
+    AbuseIpDbConfig, AbuseIpDbJailConfig, Backend, Config, GlobalConfig, JailConfig, LogBackend,
+    LoggingConfig, MaxmindField,
 };

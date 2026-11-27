@@ -8,10 +8,11 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::abuseipdb::Reporter;
 use crate::error::{Error, Result};
 use crate::track::TrackerCmd;
 
-use super::{FirewallBackend, FirewallCmd};
+use super::{FirewallBackend, FirewallCmd, ReportObservation};
 
 #[path = "executor_reload.rs"]
 mod reload;
@@ -31,10 +32,20 @@ use reconcile::reconcile_bans;
 /// apply, it notifies the tracker on `tracker_tx` with
 /// [`TrackerCmd::BanApplyFailed`] so the tracker can roll back its state.
 pub async fn run<S: BuildHasher>(
+    rx: mpsc::Receiver<FirewallCmd>,
+    backends: HashMap<String, Box<dyn FirewallBackend>, S>,
+    tracker_tx: mpsc::Sender<TrackerCmd>,
+    cancel: CancellationToken,
+) {
+    run_with_reporter(rx, backends, tracker_tx, cancel, None).await;
+}
+
+pub(crate) async fn run_with_reporter<S: BuildHasher>(
     mut rx: mpsc::Receiver<FirewallCmd>,
     mut backends: HashMap<String, Box<dyn FirewallBackend>, S>,
     tracker_tx: mpsc::Sender<TrackerCmd>,
     cancel: CancellationToken,
+    reporter: Option<Reporter>,
 ) {
     log_startup(&backends);
     let mut running = RunningRules::new();
@@ -50,7 +61,14 @@ pub async fn run<S: BuildHasher>(
             info!("executor channel closed");
             break;
         };
-        handle_cmd(cmd, &mut backends, &mut running, &tracker_tx).await;
+        handle_cmd(
+            cmd,
+            &mut backends,
+            &mut running,
+            &tracker_tx,
+            reporter.as_ref(),
+        )
+        .await;
     }
 }
 
@@ -78,9 +96,10 @@ async fn handle_cmd<S: BuildHasher>(
     backends: &mut HashMap<String, Box<dyn FirewallBackend>, S>,
     running: &mut RunningRules,
     tracker_tx: &mpsc::Sender<TrackerCmd>,
+    reporter: Option<&Reporter>,
 ) {
     match cmd {
-        ban @ FirewallCmd::Ban { .. } => handle_ban(ban, backends, tracker_tx).await,
+        ban @ FirewallCmd::Ban { .. } => handle_ban(ban, backends, tracker_tx, reporter).await,
         FirewallCmd::Reconcile { bans } => reconcile_bans(backends, bans).await,
         FirewallCmd::Unban { ip, jail_id, done } => {
             let result = apply_unban(backends, ip, &jail_id).await;
@@ -120,12 +139,14 @@ async fn handle_ban<S: BuildHasher>(
     cmd: FirewallCmd,
     backends: &HashMap<String, Box<dyn FirewallBackend>, S>,
     tracker_tx: &mpsc::Sender<TrackerCmd>,
+    reporter: Option<&Reporter>,
 ) {
     let FirewallCmd::Ban {
         ip,
         jail_id,
         banned_at,
         expires_at,
+        report,
         done,
     } = cmd
     else {
@@ -136,8 +157,9 @@ async fn handle_ban<S: BuildHasher>(
         jail_id: &jail_id,
         banned_at,
         expires_at,
+        report,
     };
-    apply_ban(backends, tracker_tx, &ban, done).await;
+    apply_ban(backends, tracker_tx, &ban, done, reporter).await;
 }
 
 /// The ban a `Ban` command asks for.
@@ -147,6 +169,7 @@ struct BanTarget<'a> {
     /// Identifies the tracker record, echoed back on failure.
     banned_at: i64,
     expires_at: Option<i64>,
+    report: Option<ReportObservation>,
 }
 
 /// Apply a ban. On the automatic path (`done: None`) a backend failure is
@@ -157,11 +180,13 @@ async fn apply_ban<S: BuildHasher>(
     tracker_tx: &mpsc::Sender<TrackerCmd>,
     ban: &BanTarget<'_>,
     done: Option<oneshot::Sender<Result<()>>>,
+    reporter: Option<&Reporter>,
 ) {
     let (ip, jail_id, expires_at) = (ban.ip, ban.jail_id, ban.expires_at);
     let now = chrono::Utc::now().timestamp();
     debug!(%ip, jail = %jail_id, "firewall applying ban");
-    let result = if let Some(backend) = backends.get(jail_id) {
+    let backend = backends.get(jail_id);
+    let result = if let Some(backend) = backend {
         backend
             .ban_with_timeout(&ip, jail_id, expires_at, now)
             .await
@@ -176,7 +201,14 @@ async fn apply_ban<S: BuildHasher>(
     match done {
         Some(done) => send_done(done, result, jail_id),
         None if result.is_err() => notify_ban_failed(tracker_tx, ban),
-        None => {}
+        None => {
+            if let (Some(reporter), Some(report), Some(backend)) = (reporter, &ban.report, backend)
+                && backend.reportable(ip)
+                && expires_at.is_none_or(|at| at > chrono::Utc::now().timestamp())
+            {
+                reporter.try_enqueue(ip, jail_id, report.timestamp);
+            }
+        }
     }
 }
 

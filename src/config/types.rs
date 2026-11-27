@@ -70,6 +70,9 @@ pub struct GlobalConfig {
     )]
     pub ban_count_decay: i64,
 
+    /// Credentials for AbuseIPDB reporting.
+    pub abuseipdb: Option<AbuseIpDbConfig>,
+
     /// Optional path to MaxMind ASN database
     pub maxmind_asn: Option<PathBuf>,
 
@@ -78,6 +81,21 @@ pub struct GlobalConfig {
 
     /// Optional path to MaxMind City database
     pub maxmind_city: Option<PathBuf>,
+}
+
+/// Credential location for native AbuseIPDB reporting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbuseIpDbConfig {
+    pub api_key_file: PathBuf,
+}
+
+/// Report categories and description for an opted-in jail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbuseIpDbJailConfig {
+    pub categories: Vec<u8>,
+    pub description: String,
 }
 
 /// Per-jail configuration.
@@ -176,6 +194,9 @@ pub struct JailConfig {
     /// shutdown and rebuilds them from the WAL, so it wants the `true` default.
     #[serde(default = "default_true")]
     pub reban_on_restart: bool,
+
+    /// Opt this jail into AbuseIPDB reporting.
+    pub abuseipdb: Option<AbuseIpDbJailConfig>,
 
     /// Webhook URL — POST JSON on ban events.
     #[serde(default)]
@@ -313,6 +334,7 @@ impl Default for GlobalConfig {
             socket_path: default_socket_path(),
             channel_size: default_channel_size(),
             ban_count_decay: default_ban_count_decay(),
+            abuseipdb: None,
             maxmind_asn: None,
             maxmind_country: None,
             maxmind_city: None,
@@ -343,6 +365,7 @@ impl Default for JailConfig {
             ignoreip: vec![],
             ignoreself: default_true(),
             reban_on_restart: default_true(),
+            abuseipdb: None,
             webhook: None,
             maxmind: vec![],
         }

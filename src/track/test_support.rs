@@ -43,6 +43,7 @@ pub(crate) fn test_store() -> Arc<Store<BanState, etchdb::WalBackend<BanState>>>
 /// A global config pointing at the bundled MaxMind test fixtures.
 pub(crate) fn test_global_config() -> crate::config::GlobalConfig {
     crate::config::GlobalConfig {
+        abuseipdb: None,
         state_dir: std::path::PathBuf::from("/tmp/state"),
         socket_path: std::path::PathBuf::from("/tmp/sock"),
         channel_size: 1024,

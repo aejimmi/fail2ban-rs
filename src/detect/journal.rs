@@ -367,13 +367,13 @@ async fn process_line(
     if ctx.ignore_list.is_ignored(&m.ip) {
         return true;
     }
-    let timestamp = entry_ts
-        .or_else(|| ctx.date_parser.parse_line(line))
-        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let source_timestamp = entry_ts.or_else(|| ctx.date_parser.parse_line(line));
+    let timestamp = source_timestamp.unwrap_or_else(|| chrono::Utc::now().timestamp());
     let failure = Failure {
         ip: m.ip,
         jail_id: ctx.jail_id.clone(),
         timestamp,
+        timestamp_from_log: source_timestamp.is_some(),
     };
     tokio::select! {
         biased;

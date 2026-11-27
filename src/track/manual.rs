@@ -93,7 +93,7 @@ pub(super) async fn start_manual_ban(
 async fn dispatch_ban(ban: &BanRecord, s: &TrackerState) -> Option<oneshot::Receiver<Result<()>>> {
     let (done_tx, done_rx) = oneshot::channel();
     if s.executor_tx
-        .send(ban_cmd(ban, Some(done_tx)))
+        .send(ban_cmd(ban, Some(done_tx), None))
         .await
         .is_err()
     {

@@ -231,6 +231,10 @@ async fn test_init_tolerates_ipv6_jump_insert_failure() {
         fb.v6().iter().all(|c| c[0] != "-F"),
         "IPv6 failure must not clean up"
     );
+    let ip6 = "2606:4700::1".parse().unwrap();
+    fb.backend.ban(&ip6, "sshd").await.unwrap();
+    assert!(!fb.backend.reportable(ip6));
+    assert!(fb.backend.reportable("8.8.8.8".parse().unwrap()));
 }
 
 #[tokio::test]

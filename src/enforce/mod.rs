@@ -19,6 +19,7 @@ mod restore;
 pub mod script;
 
 pub use executor::run;
+pub(crate) use executor::run_with_reporter;
 pub use restore::{init_and_restore, init_backends, restore_bans};
 
 #[cfg(test)]
@@ -40,6 +41,13 @@ use crate::enforce::script::ScriptBackend;
 use crate::error::{Error, Result};
 use crate::track::state::BanRecord;
 
+/// Evidence metadata for a new automatic host ban.
+#[derive(Debug)]
+pub struct ReportObservation {
+    /// Attack time from the log source, when available.
+    pub timestamp: Option<i64>,
+}
+
 /// Commands sent to the executor task.
 #[derive(Debug)]
 pub enum FirewallCmd {
@@ -49,6 +57,7 @@ pub enum FirewallCmd {
         jail_id: String,
         banned_at: i64,
         expires_at: Option<i64>,
+        report: Option<ReportObservation>,
         done: Option<oneshot::Sender<Result<()>>>,
     },
     /// Unban an IP in the firewall.
@@ -190,6 +199,12 @@ pub trait FirewallBackend: Send + Sync {
     /// ban as missing and re-applying it each tick. Defaults to `true`.
     fn can_verify(&self) -> bool {
         true
+    }
+
+    /// Whether this address family is attached to a native firewall rule.
+    /// Membership checks alone cannot establish attachment.
+    fn reportable(&self, _ip: IpAddr) -> bool {
+        false
     }
 
     /// Read every IP currently banned for `jail` in one pass.

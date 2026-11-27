@@ -131,6 +131,7 @@ async fn test_teardown_jail_partial_invokes_teardown_not_full_and_keeps_backend_
     let (ban_done_tx, ban_done_rx) = oneshot::channel();
     let ip = IpAddr::V4(Ipv4Addr::new(5, 5, 5, 5));
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip,
         jail_id: "sshd".to_string(),
         banned_at: 1000,
@@ -260,6 +261,7 @@ async fn test_add_jail_registers_backend_after_successful_init_and_it_becomes_fu
     let (ban_done_tx, ban_done_rx) = oneshot::channel();
     let ip = IpAddr::V4(Ipv4Addr::new(3, 3, 3, 3));
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip,
         jail_id: "sshd".to_string(),
         banned_at: 1000,
@@ -336,6 +338,7 @@ async fn test_add_jail_backend_failure_leaves_no_backend_registered() {
     // backend was registered rather than claiming success.
     let (ban_done_tx, ban_done_rx) = oneshot::channel();
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip: IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
         jail_id: "sshd".to_string(),
         banned_at: 1000,
@@ -381,6 +384,7 @@ async fn test_remove_jail_tears_down_and_deregisters_backend() {
     // The backend is gone: an acknowledged ban for "sshd" must now fail.
     let (ban_done_tx, ban_done_rx) = oneshot::channel();
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip: IpAddr::V4(Ipv4Addr::new(4, 4, 4, 4)),
         jail_id: "sshd".to_string(),
         banned_at: 1000,

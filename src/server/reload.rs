@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
+use crate::abuseipdb::{Policy, Reporter};
 use crate::config::Config;
 use crate::detect::watcher::Failure;
 use crate::enforce::FirewallCmd;
@@ -24,6 +25,7 @@ pub(super) struct ReloadContext<'a> {
     pub(super) watchers: &'a mut Watchers,
     pub(super) failure_tx: &'a mpsc::Sender<Failure>,
     pub(super) logger: Option<&'a Logger>,
+    pub(super) reporter: Option<&'a Reporter>,
 }
 
 /// Reload the daemon configuration in place: apply a firewall *diff*, restart
@@ -39,6 +41,7 @@ pub(super) struct ReloadContext<'a> {
 /// Every fallible step (config parse, watcher plan, firewall delta) runs
 /// before the old watchers are touched, so a failed reload leaves them
 /// running.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn reload_config(
     config_path: &std::path::Path,
     executor_tx: &mpsc::Sender<FirewallCmd>,
@@ -47,9 +50,11 @@ pub(super) async fn reload_config(
     watchers: &mut Watchers,
     failure_tx: &mpsc::Sender<Failure>,
     logger: Option<&Logger>,
+    reporter: Option<&Reporter>,
 ) -> crate::error::Result<()> {
     let new_config = Config::from_file(config_path)?;
     let new_watcher_plan = build_watcher_plan(&new_config)?;
+    let reporting = Policy::prepare(&new_config)?;
 
     let delta = FirewallDelta::compute(current_config, &new_config);
     let applied = apply_firewall_delta(
@@ -67,6 +72,9 @@ pub(super) async fn reload_config(
     applied?;
 
     let jail_count = update_tracker_config(tracker_cmd_tx, &new_config).await?;
+    if let Some(reporter) = reporter {
+        reporter.update(reporting);
+    }
     restart_watchers(new_watcher_plan, failure_tx, watchers).await;
     if let Some(t) = logger {
         t.log_reload(jail_count);

@@ -218,6 +218,7 @@ async fn handle_reload_request(
         ctx.watchers,
         ctx.failure_tx,
         ctx.logger,
+        ctx.reporter,
     )
     .await;
     match result {

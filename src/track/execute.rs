@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use tokio::sync::oneshot;
 use tracing::warn;
 
-use crate::enforce::FirewallCmd;
+use crate::enforce::{FirewallCmd, ReportObservation};
 use crate::error::{Error, Result};
 use crate::track::persist::BanCount;
 use crate::track::state::BanRecord;
@@ -48,6 +48,7 @@ pub(super) async fn execute_ban(
     jail_id: &str,
     ban_time: i64,
     new_ban_count: Option<u32>,
+    report: ReportObservation,
     s: &mut TrackerState,
 ) {
     let ban = match record_ban(ip, jail_id, ban_time, new_ban_count, s) {
@@ -57,7 +58,11 @@ pub(super) async fn execute_ban(
             return;
         }
     };
-    if s.executor_tx.send(ban_cmd(&ban, None)).await.is_err() {
+    if s.executor_tx
+        .send(ban_cmd(&ban, None, Some(report)))
+        .await
+        .is_err()
+    {
         warn!(%ip, jail = %jail_id, "executor channel closed");
         rollback_ban(ip, jail_id, RollbackReason::ChannelClosed, s);
         return;
@@ -116,13 +121,18 @@ fn persist_then_apply<S, T>(
 }
 
 /// Build the firewall `Ban` command for a record.
-pub(super) fn ban_cmd(ban: &BanRecord, done: Option<oneshot::Sender<Result<()>>>) -> FirewallCmd {
+pub(super) fn ban_cmd(
+    ban: &BanRecord,
+    done: Option<oneshot::Sender<Result<()>>>,
+    report: Option<ReportObservation>,
+) -> FirewallCmd {
     FirewallCmd::Ban {
         ip: ban.ip,
         jail_id: ban.jail_id.clone(),
         banned_at: ban.banned_at,
         expires_at: ban.expires_at,
         done,
+        report,
     }
 }
 

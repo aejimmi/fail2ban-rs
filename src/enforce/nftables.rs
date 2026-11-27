@@ -10,6 +10,7 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::debug;
 
@@ -120,12 +121,16 @@ fn parse_set_elements(listing: &str) -> HashSet<IpAddr> {
 /// Nftables backend — uses `nft` command resolved at startup.
 pub struct NftablesBackend {
     nft_path: PathBuf,
+    attached: AtomicBool,
 }
 
 impl NftablesBackend {
     /// Build a backend from the resolved `nft` binary path.
     pub fn new(nft_path: PathBuf) -> Self {
-        Self { nft_path }
+        Self {
+            nft_path,
+            attached: AtomicBool::new(false),
+        }
     }
 
     /// Run `nft` under the command timeout, mapping a nonzero exit to an error.
@@ -179,6 +184,7 @@ impl NftablesBackend {
 #[async_trait::async_trait]
 impl FirewallBackend for NftablesBackend {
     async fn init(&self, jail: &str, ports: &[String], protocol: &str) -> Result<()> {
+        self.attached.store(false, Ordering::Relaxed);
         let chain = chain_name(jail);
         self.run_nft(&["add", "table", FAMILY, TABLE]).await?;
         self.remove_legacy_chain().await;
@@ -194,10 +200,12 @@ impl FirewallBackend for NftablesBackend {
             self.run_nft(&["add", "rule", FAMILY, TABLE, &chain, &rule])
                 .await?;
         }
+        self.attached.store(true, Ordering::Relaxed);
         Ok(())
     }
 
     async fn teardown(&self, jail: &str) -> Result<()> {
+        self.attached.store(false, Ordering::Relaxed);
         // The chain goes first: nft refuses to delete a set that a rule still
         // references (EBUSY). Every rule referencing this jail's sets lives in
         // the jail's own chain, so deleting it releases both sets.
@@ -216,6 +224,7 @@ impl FirewallBackend for NftablesBackend {
     }
 
     async fn teardown_full(&self, _jail: &str) -> Result<()> {
+        self.attached.store(false, Ordering::Relaxed);
         // Deleting the table removes every jail's chain, sets, and rules —
         // including a legacy shared `f2b-chain` — so nothing leaks after exit.
         self.run_best_effort(&["delete", "table", FAMILY, TABLE])
@@ -265,6 +274,10 @@ impl FirewallBackend for NftablesBackend {
             all.extend(self.list_set(&set).await?);
         }
         Ok(Some(all))
+    }
+
+    fn reportable(&self, _ip: IpAddr) -> bool {
+        self.attached.load(Ordering::Relaxed)
     }
 
     fn name(&self) -> &'static str {

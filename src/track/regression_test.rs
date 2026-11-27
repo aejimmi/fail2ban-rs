@@ -48,6 +48,7 @@ async fn test_reban_requires_full_threshold_after_unban() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -88,6 +89,7 @@ async fn test_reban_requires_full_threshold_after_unban() {
     for i in 0..2 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + 10 + i,
@@ -105,6 +107,7 @@ async fn test_reban_requires_full_threshold_after_unban() {
     // The third fresh failure reaches the threshold again → re-ban.
     failure_tx
         .send(Failure {
+            timestamp_from_log: false,
             ip,
             jail_id: "sshd".to_string(),
             timestamp: now + 12,
@@ -212,6 +215,7 @@ async fn test_ban_count_escalates_across_bans() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -227,6 +231,7 @@ async fn test_ban_count_escalates_across_bans() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + 100 + i,
@@ -279,6 +284,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -328,6 +334,7 @@ async fn test_ban_apply_failed_rolls_back_and_allows_retry() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + 100 + i,
