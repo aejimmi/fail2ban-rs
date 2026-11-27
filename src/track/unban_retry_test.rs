@@ -11,9 +11,9 @@ use crate::track::fault_support::{FaultStore, Rig, rig};
 use crate::track::sweep::process_unbans;
 use crate::track::unban::{RETRY_SECS, handle_unban_outcome};
 
-const IP: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9));
+const IP: BanTarget = BanTarget::V4(Ipv4Addr::new(198, 51, 100, 9));
 
-fn key() -> (IpAddr, String) {
+fn key() -> (BanTarget, String) {
     (IP, "sshd".to_string())
 }
 

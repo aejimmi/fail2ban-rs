@@ -1,8 +1,9 @@
 use super::*;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
+use crate::ban_target::BanTarget;
 use crate::config::JailConfig;
 use crate::enforce::test_support::{FailingMockBackend, MockBackend};
 use crate::track::state::BanRecord;
@@ -20,6 +21,7 @@ fn test_jail_config(restore: bool) -> JailConfig {
         log_path: "/tmp/test.log".into(),
         date_format: crate::detect::date::DateFormat::Syslog,
         filter: vec!["from <HOST>".to_string()],
+        ipv6_prefix_bans: false,
         max_retry: 3,
         find_time: 600,
         ban_time: 60,
@@ -51,13 +53,13 @@ async fn restore_bans_skips_expired() {
 
     let bans = vec![
         BanRecord {
-            ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            ip: BanTarget::V4(Ipv4Addr::new(1, 1, 1, 1)),
             jail_id: "sshd".to_string(),
             banned_at: now - 7200,
             expires_at: Some(now - 3600), // expired 1 hour ago
         },
         BanRecord {
-            ip: IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)),
+            ip: BanTarget::V4(Ipv4Addr::new(2, 2, 2, 2)),
             jail_id: "sshd".to_string(),
             banned_at: now - 1800,
             expires_at: Some(now + 1800), // still active
@@ -68,7 +70,7 @@ async fn restore_bans_skips_expired() {
     let restored = crate::enforce::restore_bans(&bans, &backends, now, &jail_configs).await;
 
     assert_eq!(restored.len(), 1);
-    assert_eq!(restored[0].ip, IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)));
+    assert_eq!(restored[0].ip, BanTarget::V4(Ipv4Addr::new(2, 2, 2, 2)));
 
     let calls = calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
@@ -84,7 +86,7 @@ async fn init_and_restore_inits_before_restored_ban() {
     backends.insert("sshd".to_string(), Box::new(backend));
 
     let bans = vec![BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+        ip: BanTarget::V4(Ipv4Addr::new(9, 9, 9, 9)),
         jail_id: "sshd".to_string(),
         banned_at: now - 60,
         expires_at: Some(now + 3600),
@@ -120,7 +122,7 @@ async fn restore_bans_keeps_permanent() {
     backends.insert("sshd".to_string(), Box::new(backend));
 
     let bans = vec![BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(3, 3, 3, 3)),
+        ip: BanTarget::V4(Ipv4Addr::new(3, 3, 3, 3)),
         jail_id: "sshd".to_string(),
         banned_at: now - 86400,
         expires_at: None, // permanent
@@ -151,7 +153,7 @@ async fn restore_bans_skips_on_backend_error() {
     let now = chrono::Utc::now().timestamp();
 
     let bans = vec![BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(4, 4, 4, 4)),
+        ip: BanTarget::V4(Ipv4Addr::new(4, 4, 4, 4)),
         jail_id: "sshd".to_string(),
         banned_at: now,
         expires_at: Some(now + 3600),
@@ -171,7 +173,7 @@ async fn restore_bans_skips_jail_with_restore_disabled() {
     backends.insert("sshd".to_string(), Box::new(backend));
 
     let bans = vec![BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(5, 5, 5, 5)),
+        ip: BanTarget::V4(Ipv4Addr::new(5, 5, 5, 5)),
         jail_id: "sshd".to_string(),
         banned_at: now - 60,
         expires_at: Some(now + 3600),
@@ -213,13 +215,13 @@ async fn restore_bans_mixed_jails() {
     let now = chrono::Utc::now().timestamp();
     let bans = vec![
         BanRecord {
-            ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            ip: BanTarget::V4(Ipv4Addr::new(1, 1, 1, 1)),
             jail_id: "sshd".to_string(),
             banned_at: now - 60,
             expires_at: Some(now + 3600),
         },
         BanRecord {
-            ip: IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)),
+            ip: BanTarget::V4(Ipv4Addr::new(2, 2, 2, 2)),
             jail_id: "nginx".to_string(),
             banned_at: now - 60,
             expires_at: Some(now + 3600),
@@ -233,7 +235,7 @@ async fn restore_bans_mixed_jails() {
 
     let restored = crate::enforce::restore_bans(&bans, &backends, now, &jail_configs).await;
     assert_eq!(restored.len(), 1);
-    assert_eq!(restored[0].ip, IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2)));
+    assert_eq!(restored[0].ip, BanTarget::V4(Ipv4Addr::new(2, 2, 2, 2)));
 
     let sshd = sshd_calls.lock().expect("lock");
     assert!(sshd.is_empty(), "sshd should be skipped");

@@ -1,11 +1,11 @@
 //! Acknowledged, retryable firewall unbans.
 
-use std::net::IpAddr;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::enforce::FirewallCmd;
 use crate::error::{Error, Result};
 use crate::track::sweep::request_jail_reconcile;
@@ -24,7 +24,7 @@ pub(super) struct UnbanOutcome {
 /// Queue an unban without blocking the tracker. The ban stays indexed and
 /// persisted until the executor confirms removal.
 pub(super) async fn start_unban(
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: String,
     manual: bool,
     respond: Option<oneshot::Sender<Result<()>>>,

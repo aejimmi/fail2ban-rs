@@ -2,6 +2,7 @@
 //!
 //! Single static binary, fast two-phase matching, nftables/iptables firewall backends.
 
+pub mod ban_target;
 pub mod config;
 pub mod control;
 pub mod detect;

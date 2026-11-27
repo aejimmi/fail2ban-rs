@@ -6,8 +6,8 @@ use std::net::Ipv4Addr;
 
 use crate::track::persist::open_ban_store;
 
-const EXPIRED_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44));
-const LIVE_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 45));
+const EXPIRED_IP: BanTarget = BanTarget::V4(Ipv4Addr::new(192, 0, 2, 44));
+const LIVE_IP: BanTarget = BanTarget::V4(Ipv4Addr::new(192, 0, 2, 45));
 
 /// Persist one expired and one live ban, then close the store.
 fn write_bans(dir: &Path) {
@@ -42,7 +42,7 @@ async fn test_open_state_purges_expired_ban_without_any_unban() {
 
     let restored = open_state(dir.path()).await.unwrap();
 
-    let restored_ips: Vec<IpAddr> = restored.bans.iter().map(|b| b.ip).collect();
+    let restored_ips: Vec<BanTarget> = restored.bans.iter().map(|b| b.ip).collect();
     assert_eq!(restored_ips, vec![LIVE_IP], "expired ban not restored");
     let persisted = restored.store.read();
     assert!(

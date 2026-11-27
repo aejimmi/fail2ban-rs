@@ -1,19 +1,18 @@
 //! ipset firewall backend.
 //!
 //! Owns one `hash:ip` set per address family per jail (`f2b-<jail>` for inet,
-//! `f2b-<jail>6` for inet6) plus one `-m set` DROP rule per family in the
-//! configured iptables chain. Bans become O(1) kernel hash lookups instead of a
-//! linear chain walk, and each entry carries a kernel-side timeout so it
-//! self-clears if the daemon dies.
+//! `f2b-<jail>6` for inet6) and a `hash:net` set for IPv6 prefixes, with one `-m set` DROP rule per set in the
+//! configured iptables chain. Entries carry kernel-side timeouts so they clear
+//! if the daemon dies.
 
 use std::collections::HashSet;
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::Mutex;
 
 use tracing::{debug, warn};
 
+use crate::ban_target::BanTarget;
 use crate::enforce::{FirewallBackend, cmd};
 use crate::error::{Error, Result};
 use crate::text::lossy;
@@ -54,17 +53,29 @@ fn set_name(jail: &str, v6: bool) -> String {
     }
 }
 
-/// Argv for creating one family's set.
+fn prefix_set_name(jail: &str) -> String {
+    format!("f2b6-{jail}")
+}
+
+fn target_set_name(jail: &str, target: BanTarget) -> String {
+    if target.is_prefix() {
+        prefix_set_name(jail)
+    } else {
+        set_name(jail, target.is_ipv6())
+    }
+}
+
+/// Argv for creating one set.
 ///
 /// `timeout 0` is mandatory: it enables the set's timeout extension (without
 /// it the kernel rejects per-entry timeouts) while leaving the *default* entry
 /// timeout permanent.
-fn create_args(set: &str, family: &str, maxelem: u32) -> Vec<String> {
+fn create_args(set: &str, kind: &str, family: &str, maxelem: u32) -> Vec<String> {
     vec![
         "-exist".into(),
         "create".into(),
         set.into(),
-        "hash:ip".into(),
+        kind.into(),
         "family".into(),
         family.into(),
         "timeout".into(),
@@ -126,7 +137,7 @@ async fn run(cmd: &Path, label: &str, args: &[String]) -> Result<()> {
 /// Parse the addresses listed after `Members:` in `ipset list` output.
 ///
 /// Each member line is `<ip> [timeout N]`; only the leading address counts.
-fn parse_members(listing: &str) -> HashSet<IpAddr> {
+fn parse_members(listing: &str) -> HashSet<BanTarget> {
     listing
         .lines()
         .skip_while(|line| !line.starts_with("Members:"))
@@ -172,10 +183,23 @@ impl IpsetBackend {
     }
 
     /// The two `(binary, label, is_v6)` triples, in v4-then-v6 order.
-    fn iptables_cmds(&self) -> [(&Path, &'static str, bool); 2] {
+    fn iptables_cmds(&self, jail: &str) -> [(&Path, &'static str, String); 3] {
         [
-            (self.iptables_path.as_path(), "iptables", false),
-            (self.ip6tables_path.as_path(), "ip6tables", true),
+            (
+                self.iptables_path.as_path(),
+                "iptables",
+                set_name(jail, false),
+            ),
+            (
+                self.ip6tables_path.as_path(),
+                "ip6tables",
+                set_name(jail, true),
+            ),
+            (
+                self.ip6tables_path.as_path(),
+                "ip6tables",
+                prefix_set_name(jail),
+            ),
         ]
     }
 
@@ -208,23 +232,25 @@ impl IpsetBackend {
         run(&self.ipset_path, "ipset", args).await
     }
 
-    /// Create both family sets. A failure here is fatal — `-exist create` is
+    /// Create host and prefix sets. A failure here is fatal — `-exist create` is
     /// idempotent, so an error means the sets are unusable and every later ban
     /// would fail silently.
     async fn create_sets(&self, jail: &str) -> Result<()> {
-        for (v6, family) in [(false, "inet"), (true, "inet6")] {
-            let set = set_name(jail, v6);
-            self.run_ipset(&create_args(&set, family, self.maxelem))
+        for (set, kind, family) in [
+            (set_name(jail, false), "hash:ip", "inet"),
+            (set_name(jail, true), "hash:ip", "inet6"),
+            (prefix_set_name(jail), "hash:net", "inet6"),
+        ] {
+            self.run_ipset(&create_args(&set, kind, family, self.maxelem))
                 .await?;
         }
         Ok(())
     }
 
-    /// Flush and destroy both family sets (best effort — a set may be absent
+    /// Flush and destroy the jail sets (best effort — a set may be absent
     /// or still referenced by a stray rule; flushing first still clears bans).
     async fn destroy_sets(&self, jail: &str) {
-        for v6 in [false, true] {
-            let set = set_name(jail, v6);
+        for (_, _, set) in self.iptables_cmds(jail) {
             for verb in ["flush", "destroy"] {
                 if let Err(e) = self.run_ipset(&[verb.into(), set.clone()]).await {
                     debug!(backend = "ipset", set = %set, verb, error = %e, "ipset cleanup step failed");
@@ -234,7 +260,7 @@ impl IpsetBackend {
     }
 
     /// List one set's members. A nonzero exit is an error, never "empty".
-    async fn list_members(&self, set: String) -> Result<HashSet<IpAddr>> {
+    async fn list_members(&self, set: String) -> Result<HashSet<BanTarget>> {
         let args = ["list".to_string(), set.clone()];
         let output = capture(&self.ipset_path, "ipset", &args).await?;
         if !output.status.success() {
@@ -255,8 +281,7 @@ impl FirewallBackend for IpsetBackend {
         self.create_sets(jail).await?;
 
         let spec = self.rule_spec();
-        for (cmd, label, v6) in self.iptables_cmds() {
-            let set = set_name(jail, v6);
+        for (cmd, label, set) in self.iptables_cmds(jail) {
             let check = match_rule_args("-C", &self.chain, &set, &spec);
             let insert = match_rule_args("-I", &self.chain, &set, &spec);
             let Err(e) = cmd::ensure_rule(cmd, label, &check, &insert).await else {
@@ -264,7 +289,7 @@ impl FirewallBackend for IpsetBackend {
             };
             // IPv6 stays best-effort: hosts without IPv6 (no ip6tables or no
             // inet6 xt_set support) must still start and enforce IPv4 bans.
-            if v6 {
+            if label == "ip6tables" {
                 warn!(backend = "ipset", jail = %jail, set = %set, chain = %self.chain, error = %e, "failed to insert ip6tables match rule; IPv6 bans will have no effect");
                 continue;
             }
@@ -281,8 +306,7 @@ impl FirewallBackend for IpsetBackend {
         // references. Flush before destroy so a lingering reference (e.g. a
         // duplicate rule from an unclean shutdown) still leaves no stale bans.
         let spec = self.rule_spec();
-        for (cmd, label, v6) in self.iptables_cmds() {
-            let set = set_name(jail, v6);
+        for (cmd, label, set) in self.iptables_cmds(jail) {
             let check = match_rule_args("-C", &self.chain, &set, &spec);
             let delete = match_rule_args("-D", &self.chain, &set, &spec);
             // Older releases stacked duplicate rules on re-init: remove all.
@@ -294,18 +318,18 @@ impl FirewallBackend for IpsetBackend {
         Ok(())
     }
 
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.ban_with_timeout(ip, jail, None, 0).await
     }
 
     async fn ban_with_timeout(
         &self,
-        ip: &IpAddr,
+        ip: &BanTarget,
         jail: &str,
         expires_at: Option<i64>,
         now: i64,
     ) -> Result<()> {
-        let set = set_name(jail, ip.is_ipv6());
+        let set = target_set_name(jail, *ip);
         let secs = timeout_secs(expires_at, now);
         if let Some(exp) = expires_at
             && exp.saturating_sub(now) > MAX_TIMEOUT_SECS
@@ -329,8 +353,8 @@ impl FirewallBackend for IpsetBackend {
         .await
     }
 
-    async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
-        let set = set_name(jail, ip.is_ipv6());
+    async fn unban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
+        let set = target_set_name(jail, *ip);
         // `-exist` already ignores an entry that expired out from under us;
         // any remaining failure must still not be fatal per the trait contract.
         if let Err(e) = self
@@ -342,8 +366,11 @@ impl FirewallBackend for IpsetBackend {
         Ok(())
     }
 
-    async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
-        let set = set_name(jail, ip.is_ipv6());
+    async fn is_banned(&self, ip: &BanTarget, jail: &str) -> Result<bool> {
+        let set = target_set_name(jail, *ip);
+        if ip.is_prefix() {
+            return Ok(self.list_members(set).await?.contains(ip));
+        }
         let args = vec!["test".into(), set, ip.to_string()];
         let output = capture(&self.ipset_path, "ipset", &args).await?;
         if output.status.success() {
@@ -363,9 +390,11 @@ impl FirewallBackend for IpsetBackend {
         )))
     }
 
-    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<IpAddr>>> {
-        let mut all = self.list_members(set_name(jail, false)).await?;
-        all.extend(self.list_members(set_name(jail, true)).await?);
+    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<BanTarget>>> {
+        let mut all = HashSet::new();
+        for (_, _, set) in self.iptables_cmds(jail) {
+            all.extend(self.list_members(set).await?);
+        }
         Ok(Some(all))
     }
 

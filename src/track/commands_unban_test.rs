@@ -12,7 +12,7 @@ use crate::track::test_support::{test_global_config, test_jail_config, test_stor
 async fn test_failed_manual_unban_keeps_record_for_retry() {
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), test_jail_config());
-    let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 77));
+    let ip = BanTarget::V4(Ipv4Addr::new(203, 0, 113, 77));
     let now = chrono::Utc::now().timestamp();
     let restored = vec![crate::track::state::BanRecord {
         ip,
@@ -75,7 +75,7 @@ async fn test_failed_manual_unban_keeps_record_for_retry() {
 async fn test_closed_executor_keeps_manual_unban_record() {
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), test_jail_config());
-    let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 78));
+    let ip = BanTarget::V4(Ipv4Addr::new(203, 0, 113, 78));
     let now = chrono::Utc::now().timestamp();
     let restored = vec![crate::track::state::BanRecord {
         ip,

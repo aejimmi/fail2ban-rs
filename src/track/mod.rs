@@ -28,11 +28,11 @@ mod unban;
 pub use run::run;
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 
 use serde::Serialize;
 use tokio::sync::oneshot;
 
+use crate::ban_target::BanTarget;
 use crate::config::JailConfig;
 use crate::enforce::FirewallCmd;
 use crate::track::state::BanRecord;
@@ -53,14 +53,14 @@ pub enum TrackerCmd {
     },
     /// Manually ban an IP.
     ManualBan {
-        ip: IpAddr,
+        ip: BanTarget,
         jail_id: String,
         ban_time: i64,
         respond: oneshot::Sender<crate::error::Result<()>>,
     },
     /// Manually unban an IP.
     ManualUnban {
-        ip: IpAddr,
+        ip: BanTarget,
         jail_id: String,
         respond: oneshot::Sender<crate::error::Result<()>>,
     },
@@ -74,7 +74,7 @@ pub enum TrackerCmd {
     /// (the IP was since unbanned and re-banned) is ignored so it cannot roll
     /// back the newer record.
     BanApplyFailed {
-        ip: IpAddr,
+        ip: BanTarget,
         jail_id: String,
         banned_at: i64,
     },

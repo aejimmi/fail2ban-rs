@@ -1,10 +1,10 @@
 //! Command handling — query/mutate tracker state on behalf of the server.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 
 use tracing::{debug, info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::enforce::FirewallCmd;
 use crate::track::ban_calc::build_jail_params;
 use crate::track::execute::{RollbackReason, rollback_ban};
@@ -64,7 +64,7 @@ pub(super) async fn handle_cmd(cmd: TrackerCmd, s: &mut TrackerState) {
 /// `Reconcile` batch forwarded before this notice arrived may have re-applied
 /// the IP to the kernel, and dropping the record without an `Unban` would
 /// orphan that entry. Backends tolerate unbanning an absent entry.
-async fn rollback_failed_ban(ip: IpAddr, jail_id: &str, banned_at: i64, s: &mut TrackerState) {
+async fn rollback_failed_ban(ip: BanTarget, jail_id: &str, banned_at: i64, s: &mut TrackerState) {
     let key = (ip, jail_id.to_string());
     let current = s.store.read().bans.get(&key).map(|b| b.banned_at);
     if current != Some(banned_at) {
@@ -143,8 +143,12 @@ fn apply_config_update(
         "updating configurations"
     );
     let new_params = build_jail_params(jails);
-    s.failures
-        .retain(|(_, jail_id), _| new_params.contains_key(jail_id));
+    s.failures.retain(|(_, jail_id), _| {
+        new_params
+            .get(jail_id)
+            .zip(s.jail_params.get(jail_id))
+            .is_some_and(|(new, old)| new.prefix_ignore == old.prefix_ignore)
+    });
     s.jail_params = new_params;
     s.ban_count_decay = global.ban_count_decay;
     #[cfg(feature = "maxmind")]
@@ -153,7 +157,7 @@ fn apply_config_update(
 
 /// Manually unban an IP, rejecting unknown jails and IPs that are not banned.
 async fn do_manual_unban(
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: &str,
     respond: tokio::sync::oneshot::Sender<crate::error::Result<()>>,
     s: &mut TrackerState,

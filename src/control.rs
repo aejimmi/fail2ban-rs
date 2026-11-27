@@ -3,7 +3,6 @@
 //! Protocol: `[4-byte LE length][JSON payload]`
 //! Used by the CLI to query status, ban/unban IPs, and trigger reloads.
 
-use std::net::IpAddr;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::error::{Error, Result};
 
 /// Maximum size of a request payload the daemon will read (64 KiB).
@@ -37,9 +37,9 @@ pub enum Request {
     /// List all active bans.
     ListBans,
     /// Ban an IP in a specific jail.
-    Ban { ip: IpAddr, jail: String },
+    Ban { ip: BanTarget, jail: String },
     /// Unban an IP from a specific jail.
-    Unban { ip: IpAddr, jail: String },
+    Unban { ip: BanTarget, jail: String },
     /// Reload configuration.
     Reload,
     /// Get daemon statistics.

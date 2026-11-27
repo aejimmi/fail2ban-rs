@@ -1,8 +1,8 @@
 //! Shared test doubles for the enforce module's unit tests.
 
-use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
+use crate::ban_target::BanTarget;
 use crate::enforce::FirewallBackend;
 use crate::error::{Error, Result};
 
@@ -50,7 +50,7 @@ impl FirewallBackend for MockBackend {
         Ok(())
     }
 
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.calls
             .lock()
             .expect("lock")
@@ -58,7 +58,7 @@ impl FirewallBackend for MockBackend {
         Ok(())
     }
 
-    async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn unban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.calls
             .lock()
             .expect("lock")
@@ -66,7 +66,7 @@ impl FirewallBackend for MockBackend {
         Ok(())
     }
 
-    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
+    async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> Result<bool> {
         Ok(false)
     }
 
@@ -86,13 +86,13 @@ impl FirewallBackend for FailingMockBackend {
     async fn teardown(&self, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn ban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+    async fn ban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
         Err(Error::firewall("mock failure"))
     }
-    async fn unban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+    async fn unban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
         Err(Error::firewall("mock failure"))
     }
-    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
+    async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> Result<bool> {
         Ok(false)
     }
     fn name(&self) -> &'static str {
@@ -113,13 +113,13 @@ impl FirewallBackend for FailingInitMockBackend {
     async fn teardown(&self, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn ban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+    async fn ban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn unban(&self, _ip: &IpAddr, _jail: &str) -> Result<()> {
+    async fn unban(&self, _ip: &BanTarget, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
+    async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> Result<bool> {
         Ok(false)
     }
     fn name(&self) -> &'static str {

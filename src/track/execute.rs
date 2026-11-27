@@ -4,7 +4,7 @@
 //! executor. They are shared by the failure hot path (automatic bans), command
 //! handling (manual ban/unban), and the sweep (expiry unbans).
 
-use std::net::IpAddr;
+use crate::ban_target::BanTarget;
 
 use tokio::sync::oneshot;
 use tracing::warn;
@@ -44,7 +44,7 @@ impl RollbackReason {
 /// `new_ban_count` carries the escalation counter so the count increment and
 /// the ban record land in one atomic store write.
 pub(super) async fn execute_ban(
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: &str,
     ban_time: i64,
     new_ban_count: Option<u32>,
@@ -68,7 +68,7 @@ pub(super) async fn execute_ban(
 /// Persist a ban record (and any updated ban count) in a single transaction,
 /// index it, clear stale failures, and bump counters. Returns the record.
 pub(super) fn record_ban(
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: &str,
     ban_time: i64,
     new_ban_count: Option<u32>,
@@ -159,7 +159,7 @@ fn persist_ban(
 /// the kernel never had the ban. The failure buffer was cleared by
 /// `record_ban` and stays cleared, so the IP re-accumulates and retries.
 pub(super) fn rollback_ban(
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: &str,
     reason: RollbackReason,
     s: &mut TrackerState,

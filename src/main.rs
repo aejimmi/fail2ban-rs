@@ -1,6 +1,6 @@
 //! fail2ban-rs — A pure-Rust replacement for fail2ban.
 
-use std::net::IpAddr;
+use fail2ban_rs::ban_target::BanTarget;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -61,19 +61,19 @@ enum Command {
     /// Show daemon statistics
     Stats,
 
-    /// Ban an IP address
+    /// Ban an IP address or an IPv6 /64
     Ban {
-        /// IP address to ban
-        ip: IpAddr,
+        /// IP address or IPv6 /64 to ban
+        ip: BanTarget,
         /// Jail name
         #[arg(short, long)]
         jail: String,
     },
 
-    /// Unban an IP address
+    /// Unban an IP address or an IPv6 /64
     Unban {
-        /// IP address to unban
-        ip: IpAddr,
+        /// IP address or IPv6 /64 to unban
+        ip: BanTarget,
         /// Jail name
         #[arg(short, long)]
         jail: String,

@@ -9,10 +9,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
-use std::net::IpAddr;
 
 use tracing::{debug, info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::enforce::FirewallBackend;
 use crate::error::{Error, Result};
 use crate::track::state::BanRecord;
@@ -103,7 +103,7 @@ async fn reconcile_jail<S: BuildHasher>(
 async fn load_snapshot(
     backend: &dyn FirewallBackend,
     jail: &str,
-) -> Result<Option<HashSet<IpAddr>>> {
+) -> Result<Option<HashSet<BanTarget>>> {
     match backend.snapshot(jail).await {
         Ok(snapshot) => Ok(snapshot),
         Err(e @ Error::FirewallOutputLimit { .. }) => Err(e),
@@ -123,7 +123,7 @@ async fn load_snapshot(
 async fn is_missing(
     backend: &dyn FirewallBackend,
     ban: &BanRecord,
-    snapshot: Option<&HashSet<IpAddr>>,
+    snapshot: Option<&HashSet<BanTarget>>,
 ) -> bool {
     if let Some(set) = snapshot {
         return !set.contains(&ban.ip);

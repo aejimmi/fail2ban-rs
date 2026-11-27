@@ -46,7 +46,7 @@ async fn test_ban_and_unban_order() {
 
     let (_tracker_rx, handle) = spawn_executor(rx, backends, cancel.clone());
 
-    let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+    let ip = BanTarget::V4(Ipv4Addr::new(1, 2, 3, 4));
 
     tx.send(FirewallCmd::Ban {
         ip,
@@ -91,21 +91,21 @@ impl FirewallBackend for MissingBanMock {
     async fn teardown(&self, _jail: &str) -> Result<()> {
         Ok(())
     }
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.calls
             .lock()
             .expect("lock")
             .push(format!("ban:{ip}:{jail}"));
         Ok(())
     }
-    async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn unban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.calls
             .lock()
             .expect("lock")
             .push(format!("unban:{ip}:{jail}"));
         Ok(())
     }
-    async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool> {
+    async fn is_banned(&self, ip: &BanTarget, jail: &str) -> Result<bool> {
         self.calls
             .lock()
             .expect("lock")
@@ -127,7 +127,7 @@ async fn test_automatic_ban_failure_notifies_tracker() {
     let cancel = CancellationToken::new();
     let (mut tracker_rx, handle) = spawn_executor(rx, backends, cancel.clone());
 
-    let ip = IpAddr::V4(Ipv4Addr::new(7, 7, 7, 7));
+    let ip = BanTarget::V4(Ipv4Addr::new(7, 7, 7, 7));
     tx.send(FirewallCmd::Ban {
         ip,
         jail_id: "sshd".to_string(),
@@ -169,7 +169,7 @@ async fn test_manual_ban_failure_returns_error_via_done() {
     let cancel = CancellationToken::new();
     let (mut tracker_rx, handle) = spawn_executor(rx, backends, cancel.clone());
 
-    let ip = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+    let ip = BanTarget::V4(Ipv4Addr::new(8, 8, 8, 8));
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     tx.send(FirewallCmd::Ban {
         ip,
@@ -208,7 +208,7 @@ async fn test_manual_ban_without_backend_returns_error_via_done() {
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     tx.send(FirewallCmd::Ban {
-        ip: IpAddr::V4(Ipv4Addr::new(8, 8, 4, 4)),
+        ip: BanTarget::V4(Ipv4Addr::new(8, 8, 4, 4)),
         jail_id: "missing".to_string(),
         banned_at: 1000,
         expires_at: Some(2000),
@@ -244,7 +244,7 @@ async fn test_reconcile_reapplies_missing_ban() {
     let (_tracker_rx, handle) = spawn_executor(rx, backends, cancel.clone());
 
     let now = chrono::Utc::now().timestamp();
-    let ip = IpAddr::V4(Ipv4Addr::new(6, 6, 6, 6));
+    let ip = BanTarget::V4(Ipv4Addr::new(6, 6, 6, 6));
     tx.send(FirewallCmd::Reconcile {
         bans: vec![BanRecord {
             ip,
@@ -285,7 +285,7 @@ async fn test_reconcile_skips_jail_without_backend_and_continues() {
     );
     let now = chrono::Utc::now().timestamp();
     let record = |last: u8, jail: &str| BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(6, 6, 7, last)),
+        ip: BanTarget::V4(Ipv4Addr::new(6, 6, 7, last)),
         jail_id: jail.to_string(),
         banned_at: now,
         expires_at: None,
@@ -343,8 +343,8 @@ async fn test_two_jails_different_backends_dispatch_correctly() {
 
     let (_tracker_rx, handle) = spawn_executor(rx, backends, cancel.clone());
 
-    let ip1 = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
-    let ip2 = IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2));
+    let ip1 = BanTarget::V4(Ipv4Addr::new(1, 1, 1, 1));
+    let ip2 = BanTarget::V4(Ipv4Addr::new(2, 2, 2, 2));
 
     tx.send(FirewallCmd::Ban {
         ip: ip1,
@@ -413,7 +413,7 @@ async fn test_reconcile_then_unban_is_processed_in_order() {
     backends.insert("sshd".to_string(), Box::new(mock));
     let (tx, rx) = mpsc::channel(16);
     let cancel = CancellationToken::new();
-    let ip = IpAddr::V4(Ipv4Addr::new(6, 6, 6, 9));
+    let ip = BanTarget::V4(Ipv4Addr::new(6, 6, 6, 9));
     let ban = BanRecord {
         ip,
         jail_id: "sshd".to_string(),

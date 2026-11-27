@@ -140,7 +140,7 @@ async fn test_ban_errors_when_the_ipset_binary_is_missing() {
 #[tokio::test]
 async fn test_unban_deletes_the_entry_from_the_v4_set() {
     let f = fake_ok();
-    let ip: IpAddr = "198.51.100.9".parse().unwrap();
+    let ip: BanTarget = "198.51.100.9".parse().unwrap();
     f.backend.unban(&ip, "sshd").await.expect("unban");
 
     let ipset = f.ipset();
@@ -343,11 +343,13 @@ async fn test_teardown_removes_rules_before_flushing_and_destroying_sets() {
     assert_eq!(f.ip6tables()[1][5], "f2b-sshd6");
 
     let ipset = f.ipset();
-    assert_eq!(ipset.len(), 4, "flush+destroy per family: {ipset:?}");
+    assert_eq!(ipset.len(), 6, "flush+destroy per set: {ipset:?}");
     assert_eq!(ipset[0], vec!["flush", "f2b-sshd"]);
     assert_eq!(ipset[1], vec!["destroy", "f2b-sshd"]);
     assert_eq!(ipset[2], vec!["flush", "f2b-sshd6"]);
     assert_eq!(ipset[3], vec!["destroy", "f2b-sshd6"]);
+    assert_eq!(ipset[4], vec!["flush", "f2b6-sshd"]);
+    assert_eq!(ipset[5], vec!["destroy", "f2b6-sshd"]);
 }
 
 #[tokio::test]
@@ -360,12 +362,13 @@ async fn test_teardown_deletes_exactly_the_rule_init_inserted() {
     f.backend.init("sshd", &ports, "tcp").await.expect("init");
     f.backend.teardown("sshd").await.expect("teardown");
 
-    for rules in [f.iptables(), f.ip6tables()] {
-        assert_eq!(rules.len(), 5, "-C/-I then -C/-D/-C: {rules:?}");
-        let mut deleted = rules[3].clone();
-        assert_eq!(deleted[0], "-D");
-        deleted[0] = "-I".to_string();
-        assert_eq!(rules[1], deleted, "-D must mirror -I exactly");
+    let rules: Vec<_> = f.iptables().into_iter().chain(f.ip6tables()).collect();
+    let inserted: Vec<_> = rules.iter().filter(|rule| rule[0] == "-I").collect();
+    let deleted: Vec<_> = rules.iter().filter(|rule| rule[0] == "-D").collect();
+    assert_eq!(inserted.len(), 3);
+    assert_eq!(deleted.len(), 3);
+    for (insert, delete) in inserted.iter().zip(deleted) {
+        assert_eq!(insert[1..], delete[1..], "-D must mirror -I exactly");
     }
 }
 
@@ -421,7 +424,7 @@ async fn test_teardown_ignores_failures_on_every_step() {
         .await
         .expect("teardown must swallow per-command failures");
 
-    assert_eq!(f.ipset().len(), 4, "every step must still be attempted");
+    assert_eq!(f.ipset().len(), 6, "every step must still be attempted");
 }
 
 #[tokio::test]
@@ -433,11 +436,13 @@ async fn test_teardown_full_matches_teardown() {
         .expect("teardown_full");
 
     let ipset = f.ipset();
-    assert_eq!(ipset.len(), 4);
+    assert_eq!(ipset.len(), 6);
     assert_eq!(ipset[0], vec!["flush", "f2b-sshd"]);
     assert_eq!(ipset[3], vec!["destroy", "f2b-sshd6"]);
+    assert_eq!(ipset[4], vec!["flush", "f2b6-sshd"]);
+    assert_eq!(ipset[5], vec!["destroy", "f2b6-sshd"]);
     assert_eq!(f.iptables().len(), 1, "only the -C probe (no rule present)");
-    assert_eq!(f.ip6tables().len(), 1);
+    assert_eq!(f.ip6tables().len(), 2);
 }
 
 /// Older releases stacked duplicate match rules on re-init; teardown removes
@@ -464,7 +469,7 @@ fn test_backend_name_is_ipset() {
 // --- snapshot -------------------------------------------------------------
 
 #[tokio::test]
-async fn test_snapshot_lists_both_sets_and_parses_members() {
+async fn test_snapshot_lists_all_sets_and_parses_members() {
     let f = fake(&FakeSpec {
         ipset_output: "Name: f2b-sshd\nMembers:\n203.0.113.5 timeout 0\n2001:db8::1 timeout 30\n",
         ..FakeSpec::default()
@@ -479,7 +484,11 @@ async fn test_snapshot_lists_both_sets_and_parses_members() {
     assert!(snap.contains(&v6()));
     assert_eq!(
         f.ipset(),
-        vec![vec!["list", "f2b-sshd"], vec!["list", "f2b-sshd6"]]
+        vec![
+            vec!["list", "f2b-sshd"],
+            vec!["list", "f2b-sshd6"],
+            vec!["list", "f2b6-sshd"]
+        ]
     );
 }
 

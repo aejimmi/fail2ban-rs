@@ -4,13 +4,14 @@
 use super::*;
 
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::reload_delta_test::{minimal_config, test_jail_config};
+use crate::ban_target::BanTarget;
 use crate::config::{Backend, Config};
 use crate::enforce::FirewallCmd;
 use crate::track::TrackerCmd;
@@ -188,7 +189,7 @@ async fn test_reload_delta_timed_out_addition_is_rolled_back() {
 }
 
 /// In-memory firewall: per-jail banned sets, updated in command order.
-type Sets = HashMap<String, HashSet<IpAddr>>;
+type Sets = HashMap<String, HashSet<BanTarget>>;
 
 /// Executor stub modelling kernel state. On the first `ReplaceJail` it
 /// reports the jail on `first_tx` and waits for `go_rx` before acking.
@@ -287,7 +288,7 @@ fn spawn_real_tracker(
 #[tokio::test]
 async fn test_reload_unban_during_reload_is_not_rebanned() {
     let dir = tempfile::tempdir().unwrap();
-    let ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+    let ip = BanTarget::V4(Ipv4Addr::new(198, 51, 100, 7));
     let now = chrono::Utc::now().timestamp();
     let ban = |jail: &str| BanRecord {
         ip,

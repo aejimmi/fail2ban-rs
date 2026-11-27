@@ -47,14 +47,14 @@ async fn test_unban_timer_fires() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(40, 40, 40, 40));
+    let ip = BanTarget::V4(Ipv4Addr::new(40, 40, 40, 40));
     let now = chrono::Utc::now().timestamp();
 
     // Trigger ban.
     for i in 0..3 {
         failure_tx
             .send(Failure {
-                ip,
+                ip: ip.addr(),
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
             })
@@ -106,7 +106,7 @@ async fn test_restored_bans_populate_unban_queue() {
 
     let now = chrono::Utc::now().timestamp();
     let restored = vec![crate::track::state::BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(50, 50, 50, 50)),
+        ip: BanTarget::V4(Ipv4Addr::new(50, 50, 50, 50)),
         jail_id: "sshd".to_string(),
         banned_at: now - 10,
         expires_at: Some(now + 1), // expires in 1 second
@@ -142,7 +142,7 @@ async fn test_restored_bans_populate_unban_queue() {
         match tokio::time::timeout(std::time::Duration::from_millis(500), executor_rx.recv()).await
         {
             Ok(Some(FirewallCmd::Unban { ip, .. })) => {
-                assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(50, 50, 50, 50)));
+                assert_eq!(ip, BanTarget::V4(Ipv4Addr::new(50, 50, 50, 50)));
                 got_unban = true;
                 break;
             }
@@ -161,6 +161,7 @@ async fn test_restored_bans_populate_unban_queue() {
 #[test]
 fn test_prune_stale_failures_drops_out_of_window_entries() {
     let mk_params = |find_time: i64| JailParams {
+        prefix_ignore: None,
         max_retry: 3,
         find_time,
         ban_time: 60,
@@ -175,9 +176,9 @@ fn test_prune_stale_failures_drops_out_of_window_entries() {
     jail_params.insert("sshd".to_string(), mk_params(600));
 
     let now = 10_000i64;
-    let fresh_ip = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
-    let stale_ip = IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2));
-    let orphan_ip = IpAddr::V4(Ipv4Addr::new(3, 3, 3, 3));
+    let fresh_ip = BanTarget::V4(Ipv4Addr::new(1, 1, 1, 1));
+    let stale_ip = BanTarget::V4(Ipv4Addr::new(2, 2, 2, 2));
+    let orphan_ip = BanTarget::V4(Ipv4Addr::new(3, 3, 3, 3));
 
     let mut failures = HashMap::new();
     let mut fresh = CircularTimestamps::new(3);
@@ -227,8 +228,8 @@ fn test_prune_decayed_ban_counts_drops_only_stale_entries() {
     let now = 1_000_000i64;
     let decay = 30 * 86_400i64; // 30 days
 
-    let fresh_ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
-    let stale_ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
+    let fresh_ip = BanTarget::V4(Ipv4Addr::new(198, 51, 100, 1));
+    let stale_ip = BanTarget::V4(Ipv4Addr::new(198, 51, 100, 2));
 
     store
         .write(|tx| {
@@ -266,7 +267,7 @@ fn test_prune_decayed_ban_counts_drops_only_stale_entries() {
 #[test]
 fn test_prune_decayed_ban_counts_disabled_keeps_everything() {
     let store = test_store();
-    let ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 3));
+    let ip = BanTarget::V4(Ipv4Addr::new(198, 51, 100, 3));
     store
         .write(|tx| {
             tx.ban_counts.put(
@@ -289,7 +290,7 @@ fn test_prune_decayed_ban_counts_disabled_keeps_everything() {
 fn reconcile_bans(n: u32) -> HashMap<FailKey, BanRecord> {
     (0..n)
         .map(|i| {
-            let ip = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i));
+            let ip = BanTarget::V4(Ipv4Addr::from(0x0a00_0000 + i));
             let ban = BanRecord {
                 ip,
                 jail_id: "sshd".to_string(),
@@ -360,7 +361,7 @@ async fn test_request_jail_reconcile_sends_only_that_jails_bans() {
     let restored: Vec<BanRecord> = [("sshd", 1u8), ("nginx", 2), ("sshd", 3)]
         .iter()
         .map(|(jail, last)| BanRecord {
-            ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, *last)),
+            ip: BanTarget::V4(Ipv4Addr::new(192, 0, 2, *last)),
             jail_id: (*jail).to_string(),
             banned_at: now,
             expires_at: Some(now + 3600),

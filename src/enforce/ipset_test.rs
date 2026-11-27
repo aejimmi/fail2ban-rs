@@ -145,11 +145,11 @@ pub(super) fn missing_binaries() -> IpsetBackend {
     )
 }
 
-pub(super) fn v4() -> IpAddr {
+pub(super) fn v4() -> BanTarget {
     "203.0.113.5".parse().expect("v4 literal")
 }
 
-pub(super) fn v6() -> IpAddr {
+pub(super) fn v6() -> BanTarget {
     "2001:db8::1".parse().expect("v6 literal")
 }
 
@@ -164,7 +164,7 @@ fn test_set_name_appends_six_for_the_v6_family() {
 #[test]
 fn test_create_args_v4_are_exact() {
     assert_eq!(
-        create_args("f2b-sshd", "inet", 65_536),
+        create_args("f2b-sshd", "hash:ip", "inet", 65_536),
         vec![
             "-exist", "create", "f2b-sshd", "hash:ip", "family", "inet", "timeout", "0", "maxelem",
             "65536",
@@ -174,7 +174,7 @@ fn test_create_args_v4_are_exact() {
 
 #[test]
 fn test_create_args_carry_the_configured_maxelem() {
-    let args = create_args("f2b-sshd", "inet6", 200_000);
+    let args = create_args("f2b-sshd", "hash:ip", "inet6", 200_000);
     assert_eq!(args[5], "inet6");
     assert_eq!(args[8], "maxelem");
     assert_eq!(args[9], "200000");
@@ -281,12 +281,12 @@ fn test_timeout_secs_is_zero_for_a_permanent_ban() {
 // --- init ---------------------------------------------------------------
 
 #[tokio::test]
-async fn test_init_without_ports_creates_both_sets_and_both_rules() {
+async fn test_init_without_ports_creates_all_sets_and_rules() {
     let f = fake_ok();
     f.backend.init("sshd", &[], "tcp").await.expect("init");
 
     let ipset = f.ipset();
-    assert_eq!(ipset.len(), 2, "two creates expected: {ipset:?}");
+    assert_eq!(ipset.len(), 3, "three creates expected: {ipset:?}");
     assert_eq!(
         ipset[0],
         vec![
@@ -310,6 +310,22 @@ async fn test_init_without_ports_creates_both_sets_and_both_rules() {
         ]
     );
 
+    assert_eq!(
+        ipset[2],
+        [
+            "-exist",
+            "create",
+            "f2b6-sshd",
+            "hash:net",
+            "family",
+            "inet6",
+            "timeout",
+            "0",
+            "maxelem",
+            "65536"
+        ]
+    );
+
     let v4_rules = f.iptables();
     assert_eq!(v4_rules.len(), 2, "a -C probe then one -I: {v4_rules:?}");
     assert_eq!(v4_rules[0][0], "-C");
@@ -328,8 +344,13 @@ async fn test_init_without_ports_creates_both_sets_and_both_rules() {
         ]
     );
     let v6_rules = f.ip6tables();
-    assert_eq!(v6_rules.len(), 2, "a -C probe then one -I: {v6_rules:?}");
+    assert_eq!(
+        v6_rules.len(),
+        4,
+        "both sets need a -C probe and -I: {v6_rules:?}"
+    );
     assert_eq!(v6_rules[1][5], "f2b-sshd6");
+    assert_eq!(v6_rules[3][5], "f2b6-sshd");
 }
 
 #[tokio::test]
@@ -364,11 +385,15 @@ async fn test_init_with_ports_scopes_both_rules_to_a_multiport_match() {
         "--dports",
         "22,2222",
     ];
-    for rules in [f.iptables(), f.ip6tables()] {
-        assert_eq!(rules.len(), 2);
-        assert_eq!(rules[1][..8], expected_head[..]);
-        assert_eq!(rules[1][8], "-m");
-        assert_eq!(rules[1][9], "set");
+    for rule in f
+        .iptables()
+        .into_iter()
+        .chain(f.ip6tables())
+        .filter(|rule| rule[0] == "-I")
+    {
+        assert_eq!(rule[..8], expected_head[..]);
+        assert_eq!(rule[8], "-m");
+        assert_eq!(rule[9], "set");
     }
 }
 
@@ -434,12 +459,13 @@ async fn test_init_fails_and_destroys_sets_when_ipv4_rule_insert_fails() {
     let ipset = f.ipset();
     assert_eq!(
         ipset.len(),
-        6,
-        "2 creates + flush/destroy per set: {ipset:?}"
+        9,
+        "3 creates + flush/destroy per set: {ipset:?}"
     );
-    assert_eq!(ipset[2], vec!["flush", "f2b-sshd"]);
-    assert_eq!(ipset[3], vec!["destroy", "f2b-sshd"]);
-    assert_eq!(ipset[5], vec!["destroy", "f2b-sshd6"]);
+    assert_eq!(ipset[3], vec!["flush", "f2b-sshd"]);
+    assert_eq!(ipset[4], vec!["destroy", "f2b-sshd"]);
+    assert_eq!(ipset[6], vec!["destroy", "f2b-sshd6"]);
+    assert_eq!(ipset[8], vec!["destroy", "f2b6-sshd"]);
     assert_eq!(f.iptables().len(), 2, "-C probe then the failed -I");
     assert!(f.ip6tables().is_empty(), "IPv6 must not be touched");
 }
@@ -456,9 +482,9 @@ async fn test_init_tolerates_a_failed_ipv6_rule_insertion() {
         .await
         .expect("a failed ip6tables -I must not take the daemon down");
 
-    assert_eq!(f.ipset().len(), 2, "sets must be kept");
+    assert_eq!(f.ipset().len(), 3, "sets must be kept");
     assert_eq!(f.iptables().len(), 2);
-    assert_eq!(f.ip6tables().len(), 2);
+    assert_eq!(f.ip6tables().len(), 4);
 }
 
 #[test]

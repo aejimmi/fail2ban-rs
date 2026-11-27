@@ -6,7 +6,7 @@ use super::*;
 
 use super::iptables_test::{Bin, argv, fake_backend, table};
 
-fn ip(s: &str) -> IpAddr {
+fn ip(s: &str) -> BanTarget {
     s.parse().expect("valid ip literal")
 }
 
@@ -37,14 +37,14 @@ RETURN     all  --  0.0.0.0/0            0.0.0.0/0
 #[test]
 fn test_parse_listing_collects_sources_and_skips_wildcards() {
     let got = parse_listing(V4_LISTING);
-    let want: HashSet<IpAddr> = [ip("203.0.113.5"), ip("198.51.100.7")].into();
+    let want: HashSet<BanTarget> = [ip("203.0.113.5"), ip("198.51.100.7")].into();
     assert_eq!(got, want);
 }
 
 #[test]
 fn test_parse_listing_strips_host_prefix_suffixes() {
     let got = parse_listing("DROP all 2001:db8::9/128 ::/0\nDROP all 10.0.0.1/32 0.0.0.0/0");
-    let want: HashSet<IpAddr> = [ip("2001:db8::9"), ip("10.0.0.1")].into();
+    let want: HashSet<BanTarget> = [ip("2001:db8::9"), ip("10.0.0.1")].into();
     assert_eq!(got, want);
 }
 
@@ -271,7 +271,8 @@ async fn test_snapshot_unions_both_families() {
         .await
         .expect("snapshot")
         .expect("iptables supports snapshots");
-    let want: HashSet<IpAddr> = [ip("203.0.113.5"), ip("198.51.100.7"), ip("2001:db8::9")].into();
+    let want: HashSet<BanTarget> =
+        [ip("203.0.113.5"), ip("198.51.100.7"), ip("2001:db8::9")].into();
     assert_eq!(snap, want);
 }
 
@@ -289,4 +290,29 @@ fn test_backend_name_is_iptables() {
     let backend = IptablesBackend::new("/bin/true".into(), "/bin/true".into());
     assert_eq!(backend.name(), "iptables");
     assert!(backend.can_verify());
+}
+
+#[tokio::test]
+async fn test_unban_ipv6_prefix_keeps_host_rule_with_same_base_address() {
+    let fb = fake_backend(
+        Bin::default(),
+        printing(concat!(
+            "-N f2b-sshd\n",
+            "-A f2b-sshd -s 2001:db8::/64 -j DROP\n",
+            "-A f2b-sshd -s 2001:db8::/128 -j DROP\n",
+            "-A f2b-sshd -s 2001:db8::/64 -j DROP\n",
+            "-A f2b-sshd -j RETURN\n",
+        )),
+    );
+
+    let target = ip("2001:db8::/64");
+    fb.backend.unban(&target, "sshd").await.unwrap();
+    assert_eq!(
+        fb.v6(),
+        [
+            vec!["-S", "f2b-sshd"],
+            vec!["-D", "f2b-sshd", "3"],
+            vec!["-D", "f2b-sshd", "1"]
+        ]
+    );
 }

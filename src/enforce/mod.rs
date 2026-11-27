@@ -27,11 +27,11 @@ mod fake_bin_test_support;
 mod test_support;
 
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use tokio::sync::oneshot;
 
+use crate::ban_target::BanTarget;
 use crate::config::{Backend, JailConfig};
 use crate::enforce::ipset::IpsetBackend;
 use crate::enforce::iptables::IptablesBackend;
@@ -45,7 +45,7 @@ use crate::track::state::BanRecord;
 pub enum FirewallCmd {
     /// Ban an IP in the firewall.
     Ban {
-        ip: IpAddr,
+        ip: BanTarget,
         jail_id: String,
         banned_at: i64,
         expires_at: Option<i64>,
@@ -53,7 +53,7 @@ pub enum FirewallCmd {
     },
     /// Unban an IP in the firewall.
     Unban {
-        ip: IpAddr,
+        ip: BanTarget,
         jail_id: String,
         done: Option<tokio::sync::oneshot::Sender<crate::error::Result<()>>>,
     },
@@ -155,7 +155,7 @@ pub trait FirewallBackend: Send + Sync {
     }
 
     /// Ban an IP address.
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()>;
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()>;
 
     /// Ban an IP address with an optional kernel-side expiry backstop.
     ///
@@ -165,7 +165,7 @@ pub trait FirewallBackend: Send + Sync {
     /// the expiry and delegates to [`ban`](Self::ban).
     async fn ban_with_timeout(
         &self,
-        ip: &IpAddr,
+        ip: &BanTarget,
         jail: &str,
         expires_at: Option<i64>,
         now: i64,
@@ -178,10 +178,10 @@ pub trait FirewallBackend: Send + Sync {
     ///
     /// Removing a ban that is already absent (e.g. expired via a kernel
     /// timeout) must not be a hard error.
-    async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()>;
+    async fn unban(&self, ip: &BanTarget, jail: &str) -> Result<()>;
 
     /// Check if an IP is currently banned in the firewall.
-    async fn is_banned(&self, ip: &IpAddr, jail: &str) -> Result<bool>;
+    async fn is_banned(&self, ip: &BanTarget, jail: &str) -> Result<bool>;
 
     /// Whether [`is_banned`](Self::is_banned) reflects real firewall state.
     ///
@@ -199,7 +199,7 @@ pub trait FirewallBackend: Send + Sync {
     /// backend does not support snapshots and callers should fall back to
     /// per-IP checks. Errors mean the query itself failed — callers must not
     /// read that as "nothing is banned".
-    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<IpAddr>>> {
+    async fn snapshot(&self, jail: &str) -> Result<Option<HashSet<BanTarget>>> {
         let _ = jail;
         Ok(None)
     }

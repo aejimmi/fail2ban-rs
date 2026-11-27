@@ -5,12 +5,12 @@
 //! decay), and a small metadata map holding the on-disk schema version.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 
 use etchdb::{Replayable, Store, Transactable, WalBackend};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::ban_target::BanTarget;
 use crate::track::state::BanRecord;
 
 /// On-disk schema version for [`BanState`].
@@ -40,10 +40,10 @@ pub struct BanCount {
 pub struct BanState {
     /// Active bans keyed by `(ip, jail)`.
     #[etch(collection = 0)]
-    pub bans: HashMap<(IpAddr, String), BanRecord>,
+    pub bans: HashMap<(BanTarget, String), BanRecord>,
     /// Per-IP escalation counters keyed by IP.
     #[etch(collection = 1)]
-    pub ban_counts: HashMap<IpAddr, BanCount>,
+    pub ban_counts: HashMap<BanTarget, BanCount>,
     /// Store metadata (schema version, etc.) keyed by a short string.
     #[etch(collection = 2)]
     pub meta: HashMap<String, u64>,

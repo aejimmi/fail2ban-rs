@@ -3,7 +3,7 @@
 //! Wraps the `tell` crate to send structured log entries with severity
 //! levels. When the `tell` feature is disabled, all types exist as no-ops.
 
-use std::net::IpAddr;
+use crate::ban_target::BanTarget;
 
 use crate::config::LoggingConfig;
 
@@ -119,7 +119,7 @@ impl Logger {
 
     /// Log a ban event.
     #[cfg(feature = "tell")]
-    pub fn log_ban(&self, ip: IpAddr, jail: &str, ban_time: i64, manual: bool) {
+    pub fn log_ban(&self, ip: BanTarget, jail: &str, ban_time: i64, manual: bool) {
         if self.min_level > LogLevel::Info {
             return;
         }
@@ -139,11 +139,11 @@ impl Logger {
     /// Log a ban event (no-op without tell).
     #[cfg(not(feature = "tell"))]
     #[allow(clippy::unused_self)]
-    pub fn log_ban(&self, _ip: IpAddr, _jail: &str, _ban_time: i64, _manual: bool) {}
+    pub fn log_ban(&self, _ip: BanTarget, _jail: &str, _ban_time: i64, _manual: bool) {}
 
     /// Log an unban event.
     #[cfg(feature = "tell")]
-    pub fn log_unban(&self, ip: IpAddr, jail: &str, manual: bool) {
+    pub fn log_unban(&self, ip: BanTarget, jail: &str, manual: bool) {
         if self.min_level > LogLevel::Info {
             return;
         }
@@ -162,7 +162,7 @@ impl Logger {
     /// Log an unban event (no-op without tell).
     #[cfg(not(feature = "tell"))]
     #[allow(clippy::unused_self)]
-    pub fn log_unban(&self, _ip: IpAddr, _jail: &str, _manual: bool) {}
+    pub fn log_unban(&self, _ip: BanTarget, _jail: &str, _manual: bool) {}
 
     /// Log daemon startup.
     #[cfg(feature = "tell")]
@@ -209,7 +209,7 @@ impl Logger {
 
     /// Log a firewall error.
     #[cfg(feature = "tell")]
-    pub fn log_error(&self, message: &str, ip: IpAddr, jail: &str) {
+    pub fn log_error(&self, message: &str, ip: BanTarget, jail: &str) {
         self.client.log_error(
             message,
             Some(&self.service),
@@ -224,7 +224,7 @@ impl Logger {
     /// Log a firewall error (no-op without tell).
     #[cfg(not(feature = "tell"))]
     #[allow(clippy::unused_self)]
-    pub fn log_error(&self, _message: &str, _ip: IpAddr, _jail: &str) {}
+    pub fn log_error(&self, _message: &str, _ip: BanTarget, _jail: &str) {}
 
     /// Gracefully close the Tell client on shutdown.
     #[cfg(feature = "tell")]

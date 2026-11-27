@@ -1,7 +1,8 @@
 //! Error types for fail2ban-rs.
 
-use std::net::IpAddr;
 use std::path::PathBuf;
+
+use crate::ban_target::BanTarget;
 
 use thiserror::Error;
 
@@ -96,7 +97,7 @@ pub enum Error {
     #[error("ip already banned: {ip} in jail {jail}")]
     AlreadyBanned {
         /// The IP address that was already banned.
-        ip: IpAddr,
+        ip: BanTarget,
         /// The jail the IP is banned in.
         jail: String,
     },
@@ -105,7 +106,7 @@ pub enum Error {
     #[error("ip not banned: {ip} in jail {jail}")]
     NotBanned {
         /// The IP address that was not banned.
-        ip: IpAddr,
+        ip: BanTarget,
         /// The jail the IP was expected to be banned in.
         jail: String,
     },

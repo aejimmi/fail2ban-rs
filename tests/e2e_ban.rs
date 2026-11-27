@@ -5,6 +5,7 @@
 //! test reading `FirewallCmd` values straight off the channel, so nothing
 //! requires root permissions.
 
+use fail2ban_rs::ban_target::BanTarget;
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr};
@@ -141,7 +142,7 @@ async fn test_watcher_to_tracker_ban() {
 
     match cmd {
         FirewallCmd::Ban { ip, jail_id, .. } => {
-            assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
+            assert_eq!(ip, BanTarget::V4(Ipv4Addr::new(192, 168, 1, 100)));
             assert_eq!(jail_id, "sshd");
         }
         #[allow(clippy::panic)]
@@ -213,17 +214,17 @@ impl FirewallBackend for RecordingBackend {
         Ok(())
     }
 
-    async fn ban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn ban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.record(format!("ban:{ip}:{jail}"));
         Ok(())
     }
 
-    async fn unban(&self, ip: &IpAddr, jail: &str) -> Result<()> {
+    async fn unban(&self, ip: &BanTarget, jail: &str) -> Result<()> {
         self.record(format!("unban:{ip}:{jail}"));
         Ok(())
     }
 
-    async fn is_banned(&self, _ip: &IpAddr, _jail: &str) -> Result<bool> {
+    async fn is_banned(&self, _ip: &BanTarget, _jail: &str) -> Result<bool> {
         Ok(false)
     }
 
@@ -267,7 +268,7 @@ async fn test_restart_restore_inits_backend_before_reapplying_ban() {
 
     let now = chrono::Utc::now().timestamp();
     let persisted_bans = vec![BanRecord {
-        ip: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)),
+        ip: BanTarget::V4(Ipv4Addr::new(198, 51, 100, 7)),
         jail_id: "sshd".to_string(),
         banned_at: now - 3600,
         expires_at: Some(now + 3600), // still active
@@ -353,7 +354,7 @@ async fn test_manual_ban_with_short_ban_time_is_unbanned_after_expiry() {
         .await;
     });
 
-    let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 88));
+    let ip = BanTarget::V4(Ipv4Addr::new(203, 0, 113, 88));
     let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(TrackerCmd::ManualBan {

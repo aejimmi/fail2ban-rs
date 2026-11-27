@@ -7,12 +7,12 @@
 //! reports a [`ManualBanOutcome`] back to the tracker, which then commits
 //! (notify) or rolls back the ban and answers the control request.
 
-use std::net::IpAddr;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::enforce::FirewallCmd;
 use crate::error::{Error, Result};
 use crate::track::execute::{RollbackReason, ban_cmd, record_ban, rollback_ban};
@@ -31,7 +31,7 @@ pub(super) const MANUAL_BAN_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) struct ManualBanOutcome {
     /// Waiter id matching the tracker's pending entry.
     id: u64,
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: String,
     ban_time: i64,
     /// Firewall result; errors carry the rollback reason.
@@ -43,7 +43,7 @@ pub(super) struct ManualBanOutcome {
 /// Everything a spawned ack waiter needs.
 struct AckWaiter {
     id: u64,
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: String,
     ban_time: i64,
     respond: oneshot::Sender<Result<()>>,
@@ -54,7 +54,7 @@ struct AckWaiter {
 /// Start a manual ban: validate, record it as pending, dispatch the firewall
 /// command, and hand the ack wait to a spawned task. Never awaits the ack.
 pub(super) async fn start_manual_ban(
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: String,
     ban_time: i64,
     respond: oneshot::Sender<Result<()>>,
@@ -104,7 +104,7 @@ async fn dispatch_ban(ban: &BanRecord, s: &TrackerState) -> Option<oneshot::Rece
 }
 
 /// Reject unknown jails and already-banned (or pending) IPs.
-fn validate_manual_ban(ip: IpAddr, jail_id: &str, s: &TrackerState) -> Result<()> {
+fn validate_manual_ban(ip: BanTarget, jail_id: &str, s: &TrackerState) -> Result<()> {
     if !s.jail_params.contains_key(jail_id) {
         return Err(Error::config(format!("unknown jail: {jail_id}")));
     }
@@ -185,7 +185,7 @@ pub(super) async fn handle_manual_ban_outcome(o: ManualBanOutcome, s: &mut Track
 ///
 /// Only called while the pending entry is still current: once the IP was
 /// unbanned (and possibly re-banned) the `Unban` would remove a newer ban.
-async fn queue_timeout_unban(ip: IpAddr, jail_id: &str, s: &TrackerState) {
+async fn queue_timeout_unban(ip: BanTarget, jail_id: &str, s: &TrackerState) {
     let unban = FirewallCmd::Unban {
         ip,
         jail_id: jail_id.to_string(),

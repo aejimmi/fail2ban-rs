@@ -76,14 +76,14 @@ fn rule_args(chain: &str, expr: &str) -> Vec<String> {
 
 #[test]
 fn test_set_block_includes_timeout_flag() {
-    let block = set_block("ipv4_addr");
+    let block = set_block("ipv4_addr", false);
     assert_eq!(block, "{ type ipv4_addr; flags timeout; }");
-    assert!(set_block("ipv6_addr").contains("ipv6_addr"));
+    assert!(set_block("ipv6_addr", true).contains("ipv6_addr"));
 }
 
 #[test]
 fn test_element_spec_with_expiry_has_timeout_seconds() {
-    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    let ip: BanTarget = "1.2.3.4".parse().unwrap();
     assert_eq!(
         element_spec(&ip, Some(1_060), 1_000),
         "{ 1.2.3.4 timeout 60s }"
@@ -92,19 +92,19 @@ fn test_element_spec_with_expiry_has_timeout_seconds() {
 
 #[test]
 fn test_element_spec_without_expiry_has_no_timeout() {
-    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    let ip: BanTarget = "1.2.3.4".parse().unwrap();
     assert_eq!(element_spec(&ip, None, 1_000), "{ 1.2.3.4 }");
 }
 
 #[test]
 fn test_element_spec_clamps_past_expiry_to_one_second() {
-    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    let ip: BanTarget = "1.2.3.4".parse().unwrap();
     assert!(element_spec(&ip, Some(500), 1_000).contains("timeout 1s"));
 }
 
 #[test]
 fn test_element_spec_ipv6() {
-    let ip: IpAddr = "2001:db8::1".parse().unwrap();
+    let ip: BanTarget = "2001:db8::1".parse().unwrap();
     assert_eq!(
         element_spec(&ip, Some(1_030), 1_000),
         "{ 2001:db8::1 timeout 30s }"
@@ -115,7 +115,11 @@ fn test_element_spec_ipv6() {
 fn test_rule_exprs_without_ports_match_all_traffic() {
     assert_eq!(
         rule_exprs("sshd", &[], "tcp"),
-        ["ip saddr @f2b-sshd reject", "ip6 saddr @f2b-sshd-v6 reject"]
+        [
+            "ip saddr @f2b-sshd reject",
+            "ip6 saddr @f2b-sshd-v6 reject",
+            "ip6 saddr @f2b6-sshd reject"
+        ]
     );
 }
 
@@ -127,6 +131,7 @@ fn test_rule_exprs_with_ports_scope_to_dport_list() {
         [
             "tcp dport { 22,2222 } ip saddr @f2b-sshd reject",
             "tcp dport { 22,2222 } ip6 saddr @f2b-sshd-v6 reject",
+            "tcp dport { 22,2222 } ip6 saddr @f2b6-sshd reject",
         ]
     );
 }
@@ -144,6 +149,8 @@ async fn test_init_without_ports_builds_jail_chain_sets_and_rules() {
     add_v4.push("{ type ipv4_addr; flags timeout; }".into());
     let mut add_v6 = table_args("add", "set", "f2b-sshd-v6");
     add_v6.push("{ type ipv6_addr; flags timeout; }".into());
+    let mut add_prefix = table_args("add", "set", "f2b6-sshd");
+    add_prefix.push("{ type ipv6_addr; flags interval,timeout; }".into());
     assert_eq!(
         fake.calls(),
         vec![
@@ -157,8 +164,10 @@ async fn test_init_without_ports_builds_jail_chain_sets_and_rules() {
             table_args("flush", "chain", "f2b-sshd"),
             add_v4,
             add_v6,
+            add_prefix,
             rule_args("f2b-sshd", "ip saddr @f2b-sshd reject"),
             rule_args("f2b-sshd", "ip6 saddr @f2b-sshd-v6 reject"),
+            rule_args("f2b-sshd", "ip6 saddr @f2b6-sshd reject"),
         ]
     );
 }
@@ -173,19 +182,19 @@ async fn test_init_with_ports_adds_scoped_rules_to_jail_chain() {
         .expect("init");
 
     let calls = fake.calls();
-    assert_eq!(calls.len(), 9, "unexpected invocations: {calls:?}");
+    assert_eq!(calls.len(), 11, "unexpected invocations: {calls:?}");
     assert_eq!(
-        calls[7],
+        calls[8],
         rule_args(
             "f2b-sshd",
             "tcp dport { 22,2222 } ip saddr @f2b-sshd reject"
         )
     );
     assert_eq!(
-        calls[8],
+        calls[9],
         rule_args(
             "f2b-sshd",
-            "tcp dport { 22,2222 } ip6 saddr @f2b-sshd-v6 reject"
+            "tcp dport { 22,2222 } ip6 saddr @f2b-sshd-v6 reject",
         )
     );
     assert!(
@@ -208,7 +217,7 @@ async fn test_init_flushes_jail_chain_before_adding_rules() {
         .expect("re-init");
 
     let calls = fake.calls();
-    let second = &calls[9..];
+    let second = &calls[11..];
     let flush = second
         .iter()
         .position(|c| *c == table_args("flush", "chain", "f2b-sshd"))
@@ -230,7 +239,7 @@ async fn test_init_tolerates_missing_legacy_chain() {
         .init("sshd", &[], "tcp")
         .await
         .expect("an absent legacy chain must not fail init");
-    assert_eq!(fake.calls().len(), 9);
+    assert_eq!(fake.calls().len(), 11);
 }
 
 #[tokio::test]
@@ -283,6 +292,8 @@ async fn test_teardown_deletes_jail_chain_before_sets() {
             table_args("delete", "set", "f2b-sshd"),
             table_args("flush", "set", "f2b-sshd-v6"),
             table_args("delete", "set", "f2b-sshd-v6"),
+            table_args("flush", "set", "f2b6-sshd"),
+            table_args("delete", "set", "f2b6-sshd"),
         ]
     );
 }
@@ -294,7 +305,7 @@ async fn test_teardown_ignores_failures_on_every_step() {
         .teardown("sshd")
         .await
         .expect("teardown must swallow per-command failures");
-    assert_eq!(fake.calls().len(), 6, "every step must still be attempted");
+    assert_eq!(fake.calls().len(), 8, "every step must still be attempted");
 }
 
 #[tokio::test]
@@ -330,7 +341,8 @@ fn test_chain_name_legacy_jail_name_maps_to_legacy_chain() {
 /// collision validation prevents by rejecting names ending in the suffix.
 #[test]
 fn test_set_names_v6_uses_reserved_suffix() {
-    let [v4, v6] = set_names("foo");
+    let [v4, v6, prefix] = set_names("foo");
     assert_eq!(v6, format!("{v4}{V6_SET_SUFFIX}"));
+    assert_eq!(prefix, "f2b6-foo");
     assert_eq!(set_names("foo-v6")[0], v6, "the collision being guarded");
 }

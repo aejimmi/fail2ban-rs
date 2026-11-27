@@ -26,9 +26,9 @@ async fn test_init_twice_inserts_the_match_rule_once() {
     let f = fake_ok();
     f.backend.init("sshd", &[], "tcp").await.expect("init");
     f.backend.init("sshd", &[], "tcp").await.expect("re-init");
-    for rules in [f.iptables(), f.ip6tables()] {
+    for (rules, sets) in [(f.iptables(), 1), (f.ip6tables(), 2)] {
         let inserts = rules.iter().filter(|r| r[0] == "-I").count();
-        assert_eq!(inserts, 1, "one -I across two inits: {rules:?}");
-        assert_eq!(rules.len(), 3, "-C, -I, -C: {rules:?}");
+        assert_eq!(inserts, sets, "one -I per set across two inits: {rules:?}");
+        assert_eq!(rules.len(), 3 * sets, "-C, -I, -C: {rules:?}");
     }
 }

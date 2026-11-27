@@ -6,7 +6,7 @@
 //! handling. `Reload` mutates the daemon's config and watchers, so it runs
 //! inline.
 
-use std::net::IpAddr;
+use crate::ban_target::BanTarget;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info};
@@ -23,12 +23,12 @@ pub(super) enum TrackerRequest {
     ListBans,
     /// Manually ban `ip` in `jail` for `ban_time` seconds.
     Ban {
-        ip: IpAddr,
+        ip: BanTarget,
         jail: String,
         ban_time: i64,
     },
     /// Manually unban `ip` from `jail`.
-    Unban { ip: IpAddr, jail: String },
+    Unban { ip: BanTarget, jail: String },
     /// Runtime statistics.
     Stats,
 }
@@ -138,7 +138,7 @@ pub(super) async fn forward_to_tracker(
 /// applied (or failed/timed out applying) the ban.
 async fn manual_ban(
     tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
-    ip: IpAddr,
+    ip: BanTarget,
     jail: String,
     ban_time: i64,
 ) -> Result<Response, Response> {
@@ -155,7 +155,7 @@ async fn manual_ban(
 
 async fn manual_unban(
     tracker_cmd_tx: &mpsc::Sender<TrackerCmd>,
-    ip: IpAddr,
+    ip: BanTarget,
     jail: String,
 ) -> Result<Response, Response> {
     let ok_message = format!("unbanned {ip} from {jail}");

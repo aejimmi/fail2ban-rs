@@ -1,7 +1,6 @@
 //! Tracker event loop — startup seeding and the main `select!` loop.
 
 use std::collections::{HashMap, VecDeque};
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use etchdb::{Store, WalBackend};
@@ -9,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::config::JailConfig;
 use crate::detect::watcher::Failure;
 use crate::enforce::FirewallCmd;
@@ -47,7 +47,7 @@ pub async fn run(
     executor_tx: mpsc::Sender<FirewallCmd>,
     reconcile: bool,
     restored_bans: Vec<BanRecord>,
-    restored_ban_counts: HashMap<IpAddr, BanCount>,
+    restored_ban_counts: HashMap<BanTarget, BanCount>,
     store: Arc<Store<BanState, WalBackend<BanState>>>,
     logger: Option<Logger>,
     cancel: CancellationToken,
@@ -242,7 +242,7 @@ fn init_state(
 fn seed_restored(
     state: &mut TrackerState,
     restored_bans: &[BanRecord],
-    restored_ban_counts: &HashMap<IpAddr, BanCount>,
+    restored_ban_counts: &HashMap<BanTarget, BanCount>,
 ) {
     let store_state = state.store.read();
     let should_seed = store_state.bans.is_empty() && !restored_bans.is_empty();

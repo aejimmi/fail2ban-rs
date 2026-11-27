@@ -25,11 +25,11 @@ fn legacy_would_ban(timestamps: &[i64], max_retry: u32, find_time: i64) -> bool 
 
 /// Pre-streaming reference for one jail: load all lines, collect every
 /// timestamp per IP. Returns (match_count, ip -> (count, would_ban)).
-fn legacy_jail(lines: &[String], jail: &JailConfig) -> (usize, HashMap<IpAddr, (usize, bool)>) {
+fn legacy_jail(lines: &[String], jail: &JailConfig) -> (usize, HashMap<BanTarget, (usize, bool)>) {
     let matcher = JailMatcher::new(&jail.filter).unwrap();
     let parser = DateParser::new(jail.date_format).unwrap();
     let ignore = IgnoreList::new(&jail.ignoreip, jail.ignoreself).unwrap();
-    let mut failures: HashMap<IpAddr, Vec<i64>> = HashMap::new();
+    let mut failures: HashMap<BanTarget, Vec<i64>> = HashMap::new();
     let mut matches = 0;
     for line in lines {
         let Some(m) = matcher.try_match(line) else {
@@ -39,7 +39,7 @@ fn legacy_jail(lines: &[String], jail: &JailConfig) -> (usize, HashMap<IpAddr, (
             continue;
         }
         failures
-            .entry(m.ip)
+            .entry(m.ip.into())
             .or_default()
             .push(parser.parse_line(line).unwrap_or(0));
         matches += 1;

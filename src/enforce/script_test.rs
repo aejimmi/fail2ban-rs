@@ -44,7 +44,7 @@ async fn ban_rejects_unsafe_jail_without_running() {
         "exit 1".to_string(), // would fail if it ever ran
         "exit 1".to_string(),
     );
-    let ip: IpAddr = "1.2.3.4".parse().expect("valid ip");
+    let ip: BanTarget = "1.2.3.4".parse().expect("valid ip");
     let err = backend
         .ban(&ip, "evil; touch /tmp/pwned")
         .await
@@ -58,7 +58,7 @@ async fn unban_rejects_unsafe_jail_without_running() {
         "exit 1".to_string(),
         "exit 1".to_string(), // would fail if it ever ran
     );
-    let ip: IpAddr = "1.2.3.4".parse().expect("valid ip");
+    let ip: BanTarget = "1.2.3.4".parse().expect("valid ip");
     let err = backend
         .unban(&ip, "$(id)")
         .await
@@ -76,7 +76,7 @@ async fn ban_runs_real_command_with_ip_and_jail_substituted() {
         format!("printf '%s %s' <IP> <JAIL> > {}", marker.display()),
         "exit 1".to_string(), // never run
     );
-    let ip: IpAddr = "203.0.113.9".parse().expect("valid ip");
+    let ip: BanTarget = "203.0.113.9".parse().expect("valid ip");
 
     backend.ban(&ip, "sshd").await.expect("ban should succeed");
 
@@ -94,7 +94,7 @@ async fn unban_runs_real_command_with_ip_and_jail_substituted() {
         "exit 1".to_string(), // never run
         format!("printf '%s %s' <IP> <JAIL> > {}", marker.display()),
     );
-    let ip: IpAddr = "198.51.100.4".parse().expect("valid ip");
+    let ip: BanTarget = "198.51.100.4".parse().expect("valid ip");
 
     backend
         .unban(&ip, "nginx")
@@ -108,7 +108,7 @@ async fn unban_runs_real_command_with_ip_and_jail_substituted() {
 #[tokio::test]
 async fn ban_nonzero_exit_maps_to_error() {
     let backend = ScriptBackend::new("exit 7".to_string(), "exit 0".to_string());
-    let ip: IpAddr = "1.2.3.4".parse().expect("valid ip");
+    let ip: BanTarget = "1.2.3.4".parse().expect("valid ip");
     let err = backend
         .ban(&ip, "sshd")
         .await
@@ -119,7 +119,7 @@ async fn ban_nonzero_exit_maps_to_error() {
 #[tokio::test]
 async fn unban_nonzero_exit_maps_to_error() {
     let backend = ScriptBackend::new("exit 0".to_string(), "exit 7".to_string());
-    let ip: IpAddr = "1.2.3.4".parse().expect("valid ip");
+    let ip: BanTarget = "1.2.3.4".parse().expect("valid ip");
     let err = backend
         .unban(&ip, "sshd")
         .await
@@ -132,7 +132,7 @@ async fn unban_nonzero_exit_maps_to_error() {
 #[tokio::test]
 async fn is_banned_always_returns_false() {
     let backend = ScriptBackend::new("exit 0".to_string(), "exit 0".to_string());
-    let ip: IpAddr = "1.2.3.4".parse().expect("valid ip");
+    let ip: BanTarget = "1.2.3.4".parse().expect("valid ip");
     let banned = backend
         .is_banned(&ip, "sshd")
         .await
@@ -179,7 +179,7 @@ async fn test_snapshot_is_unsupported_for_script_backend() {
 #[tokio::test]
 async fn test_ban_error_carries_script_stderr() {
     let backend = ScriptBackend::new("echo nope >&2; exit 2".to_string(), "exit 0".to_string());
-    let ip: IpAddr = "1.2.3.4".parse().expect("valid ip");
+    let ip: BanTarget = "1.2.3.4".parse().expect("valid ip");
     let err = backend.ban(&ip, "sshd").await.expect_err("must fail");
     let msg = err.to_string();
     assert!(msg.contains("script exit"), "got: {msg}");

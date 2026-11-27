@@ -103,6 +103,10 @@ pub struct JailConfig {
     #[serde(default = "default_max_retry")]
     pub max_retry: u32,
 
+    /// Group automatic IPv6 failures and bans by /64.
+    #[serde(default)]
+    pub ipv6_prefix_bans: bool,
+
     /// Time window (seconds or duration string like "10m", "1h").
     #[serde(
         default = "default_find_time",
@@ -217,8 +221,7 @@ pub enum Backend {
         /// Command run to unban an IP.
         unban_cmd: String,
     },
-    /// ipset — per-jail `hash:ip` sets referenced from one iptables rule
-    /// per address family, giving O(1) ban lookups.
+    /// ipset — per-jail sets for host addresses and IPv6 prefixes.
     Ipset {
         /// Maximum number of entries a set can hold (ipset's own default).
         maxelem: u32,
@@ -328,6 +331,7 @@ impl Default for JailConfig {
             date_format: default_date_format(),
             filter: vec![],
             max_retry: default_max_retry(),
+            ipv6_prefix_bans: false,
             find_time: default_find_time(),
             ban_time: default_ban_time(),
             port: vec![],

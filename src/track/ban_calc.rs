@@ -5,9 +5,11 @@
 use std::collections::HashMap;
 
 use crate::config::JailConfig;
+use crate::detect::ignore::IgnoreList;
 
 /// Per-jail parameters relevant to ban calculations.
 pub(crate) struct JailParams {
+    pub(crate) prefix_ignore: Option<IgnoreList>,
     pub(crate) max_retry: u32,
     pub(crate) find_time: i64,
     pub(crate) ban_time: i64,
@@ -52,6 +54,10 @@ pub(crate) fn build_jail_params(
             (
                 name.clone(),
                 JailParams {
+                    prefix_ignore: cfg
+                        .ipv6_prefix_bans
+                        .then(|| IgnoreList::new(&cfg.ignoreip, cfg.ignoreself))
+                        .and_then(Result::ok),
                     max_retry: cfg.max_retry,
                     find_time: cfg.find_time,
                     ban_time: cfg.ban_time,

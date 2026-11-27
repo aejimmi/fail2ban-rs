@@ -5,9 +5,9 @@
 //! `max_retry` timestamps, and a sticky would-ban flag. Memory therefore grows
 //! with the number of unique offending IPs, never with log size.
 
+use fail2ban_rs::ban_target::BanTarget;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::net::IpAddr;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -62,7 +62,7 @@ pub(crate) struct JailScan<'a> {
     /// Total non-ignored matches.
     pub(crate) match_count: usize,
     /// Per-IP bounded state.
-    pub(crate) ips: HashMap<IpAddr, IpState>,
+    pub(crate) ips: HashMap<BanTarget, IpState>,
 }
 
 impl<'a> JailScan<'a> {
@@ -97,8 +97,13 @@ impl<'a> JailScan<'a> {
         }
         let ts = self.date_parser.parse_line(line).unwrap_or(0);
         let max_retry = self.jail.max_retry;
+        let target = if self.jail.ipv6_prefix_bans {
+            self.ignore.ban_target(m.ip)
+        } else {
+            m.ip.into()
+        };
         self.ips
-            .entry(m.ip)
+            .entry(target)
             .or_insert_with(|| IpState::new(max_retry))
             .record(ts, self.jail.find_time);
         self.match_count += 1;
@@ -200,7 +205,7 @@ fn render_jail(out: &mut impl Write, s: &JailScan<'_>) -> std::io::Result<()> {
 /// Render one IP's line.
 fn render_ip(
     out: &mut impl Write,
-    ip: &IpAddr,
+    ip: &BanTarget,
     state: &IpState,
     jail: &JailConfig,
 ) -> std::io::Result<()> {

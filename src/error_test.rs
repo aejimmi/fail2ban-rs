@@ -1,6 +1,8 @@
 use super::*;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
+
+use crate::ban_target::BanTarget;
 
 #[test]
 fn config_error_display() {
@@ -91,7 +93,7 @@ fn channel_closed_display() {
 #[test]
 fn already_banned_display() {
     let err = Error::AlreadyBanned {
-        ip: IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+        ip: BanTarget::V4(Ipv4Addr::new(1, 2, 3, 4)),
         jail: "sshd".to_string(),
     };
     let msg = err.to_string();
@@ -102,7 +104,7 @@ fn already_banned_display() {
 #[test]
 fn not_banned_display() {
     let err = Error::NotBanned {
-        ip: IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8)),
+        ip: BanTarget::V4(Ipv4Addr::new(5, 6, 7, 8)),
         jail: "nginx".to_string(),
     };
     let msg = err.to_string();

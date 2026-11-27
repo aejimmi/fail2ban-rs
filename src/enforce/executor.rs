@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
-use std::net::IpAddr;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::ban_target::BanTarget;
 use crate::error::{Error, Result};
 use crate::track::TrackerCmd;
 
@@ -131,7 +131,7 @@ async fn handle_ban<S: BuildHasher>(
     else {
         return;
     };
-    let ban = BanTarget {
+    let ban = BanApplication {
         ip,
         jail_id: &jail_id,
         banned_at,
@@ -141,8 +141,8 @@ async fn handle_ban<S: BuildHasher>(
 }
 
 /// The ban a `Ban` command asks for.
-struct BanTarget<'a> {
-    ip: IpAddr,
+struct BanApplication<'a> {
+    ip: BanTarget,
     jail_id: &'a str,
     /// Identifies the tracker record, echoed back on failure.
     banned_at: i64,
@@ -155,7 +155,7 @@ struct BanTarget<'a> {
 async fn apply_ban<S: BuildHasher>(
     backends: &HashMap<String, Box<dyn FirewallBackend>, S>,
     tracker_tx: &mpsc::Sender<TrackerCmd>,
-    ban: &BanTarget<'_>,
+    ban: &BanApplication<'_>,
     done: Option<oneshot::Sender<Result<()>>>,
 ) {
     let (ip, jail_id, expires_at) = (ban.ip, ban.jail_id, ban.expires_at);
@@ -185,7 +185,7 @@ async fn apply_ban<S: BuildHasher>(
 /// Uses `try_send` so the executor never blocks (and cannot deadlock against a
 /// full tracker-command channel). A dropped notification is self-healing: the
 /// periodic reconcile will re-apply the still-persisted ban to the kernel.
-fn notify_ban_failed(tracker_tx: &mpsc::Sender<TrackerCmd>, ban: &BanTarget<'_>) {
+fn notify_ban_failed(tracker_tx: &mpsc::Sender<TrackerCmd>, ban: &BanApplication<'_>) {
     let cmd = TrackerCmd::BanApplyFailed {
         ip: ban.ip,
         jail_id: ban.jail_id.to_string(),
@@ -199,7 +199,7 @@ fn notify_ban_failed(tracker_tx: &mpsc::Sender<TrackerCmd>, ban: &BanTarget<'_>)
 /// Remove a ban from the firewall, tolerating an already-absent entry.
 async fn apply_unban<S: BuildHasher>(
     backends: &HashMap<String, Box<dyn FirewallBackend>, S>,
-    ip: IpAddr,
+    ip: BanTarget,
     jail_id: &str,
 ) -> Result<()> {
     debug!(%ip, jail = %jail_id, "firewall applying unban");
