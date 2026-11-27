@@ -164,6 +164,7 @@ async fn test_control_request_ban_and_unban_round_trip_through_real_tracker() {
     let config_path = std::path::PathBuf::from("/nonexistent/fail2ban-rs-test.toml");
 
     let mut ctx = ReloadContext {
+        reporter: None,
         config_path: &config_path,
         executor_tx: &unused_executor_tx,
         config: &mut config,
@@ -356,6 +357,7 @@ async fn test_control_request_reports_backend_ban_failure_after_tracker_rollback
     let mut watchers = Watchers::default();
     let config_path = std::path::PathBuf::from("/nonexistent/fail2ban-rs-test.toml");
     let mut ctx = ReloadContext {
+        reporter: None,
         config_path: &config_path,
         executor_tx: &unused_executor_tx,
         config: &mut config,
@@ -419,6 +421,7 @@ async fn test_control_request_reports_tracker_unavailable_once_tracker_is_gone()
     let mut watchers = Watchers::default();
     let config_path = std::path::PathBuf::from("/nonexistent/fail2ban-rs-test.toml");
     let mut ctx = ReloadContext {
+        reporter: None,
         config_path: &config_path,
         executor_tx: &unused_executor_tx,
         config: &mut config,
@@ -448,6 +451,7 @@ async fn test_dispatch_control_ban_does_not_block_main_loop() {
     let mut watchers = Watchers::default();
     let config_path = std::path::PathBuf::from("/nonexistent/fail2ban-rs-test.toml");
     let mut ctx = ReloadContext {
+        reporter: None,
         config_path: &config_path,
         executor_tx: &executor_tx,
         config: &mut config,

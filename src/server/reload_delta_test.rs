@@ -25,6 +25,7 @@ pub(crate) fn minimal_config() -> Config {
 /// Build a minimal `JailConfig` with a valid filter.
 pub(crate) fn test_jail_config() -> JailConfig {
     JailConfig {
+        abuseipdb: None,
         enabled: true,
         log_path: "/tmp/test.log".into(),
         date_format: crate::detect::date::DateFormat::Syslog,

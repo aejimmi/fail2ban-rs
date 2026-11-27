@@ -49,6 +49,7 @@ async fn test_maxmind_asn_att() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -107,6 +108,7 @@ async fn test_maxmind_country_uk_ipv6() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -165,6 +167,7 @@ async fn test_maxmind_city_sweden() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -262,6 +265,7 @@ async fn test_same_ip_different_jails_tracked_independently() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "sshd".to_string(),
                 timestamp: now + i,
@@ -284,6 +288,7 @@ async fn test_same_ip_different_jails_tracked_independently() {
     for i in 0..3 {
         failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip,
                 jail_id: "nginx".to_string(),
                 timestamp: now + 10 + i,

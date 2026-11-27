@@ -49,6 +49,7 @@ async fn test_ban_and_unban_order() {
     let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
 
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip,
         jail_id: "sshd".to_string(),
         banned_at: 1000,
@@ -129,6 +130,7 @@ async fn test_automatic_ban_failure_notifies_tracker() {
 
     let ip = IpAddr::V4(Ipv4Addr::new(7, 7, 7, 7));
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip,
         jail_id: "sshd".to_string(),
         banned_at: 1000,
@@ -172,6 +174,7 @@ async fn test_manual_ban_failure_returns_error_via_done() {
     let ip = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip,
         jail_id: "sshd".to_string(),
         banned_at: 1000,
@@ -208,6 +211,7 @@ async fn test_manual_ban_without_backend_returns_error_via_done() {
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip: IpAddr::V4(Ipv4Addr::new(8, 8, 4, 4)),
         jail_id: "missing".to_string(),
         banned_at: 1000,
@@ -347,6 +351,7 @@ async fn test_two_jails_different_backends_dispatch_correctly() {
     let ip2 = IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2));
 
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip: ip1,
         jail_id: "sshd".to_string(),
         banned_at: 1000,
@@ -357,6 +362,7 @@ async fn test_two_jails_different_backends_dispatch_correctly() {
     .unwrap();
 
     tx.send(FirewallCmd::Ban {
+        report: None,
         ip: ip2,
         jail_id: "nginx".to_string(),
         banned_at: 1000,

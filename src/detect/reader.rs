@@ -53,14 +53,13 @@ impl ReadCtx {
             );
             return true;
         }
-        let timestamp = self
-            .date_parser
-            .parse_line(line)
-            .unwrap_or_else(|| chrono::Utc::now().timestamp());
+        let source_timestamp = self.date_parser.parse_line(line);
+        let timestamp = source_timestamp.unwrap_or_else(|| chrono::Utc::now().timestamp());
         let failure = Failure {
             ip: m.ip,
             jail_id: self.jail_id.clone(),
             timestamp,
+            timestamp_from_log: source_timestamp.is_some(),
         };
         self.tx.blocking_send(failure).is_ok()
     }

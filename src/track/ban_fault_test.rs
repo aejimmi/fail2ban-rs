@@ -20,6 +20,7 @@ fn key() -> (IpAddr, String) {
 
 fn failure(ts: i64) -> Failure {
     Failure {
+        timestamp_from_log: false,
         ip: IP,
         jail_id: "sshd".to_string(),
         timestamp: ts,

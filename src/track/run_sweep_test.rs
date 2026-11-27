@@ -58,6 +58,7 @@ impl LoopHarness {
     async fn send_stale_failure(&self, octet: u8) {
         self.failure_tx
             .send(Failure {
+                timestamp_from_log: false,
                 ip: Ipv4Addr::new(198, 51, 100, octet).into(),
                 jail_id: "sshd".to_string(),
                 timestamp: chrono::Utc::now().timestamp() - 120,

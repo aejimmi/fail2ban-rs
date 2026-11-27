@@ -121,6 +121,7 @@ async fn test_manual_ban_hung_firewall_keeps_tracker_responsive() {
     let now = chrono::Utc::now().timestamp();
     for i in 0..3 {
         let failure = Failure {
+            timestamp_from_log: false,
             ip: ip(2),
             jail_id: "sshd".to_string(),
             timestamp: now + i,

@@ -90,12 +90,13 @@ async fn ban_via_executor(backends: &Backends, last: u8) -> Result<()> {
     let (done_tx, done_rx) = oneshot::channel();
     let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, last));
     let ban = super::super::BanTarget {
+        report: None,
         ip,
         jail_id: "sshd",
         banned_at: 0,
         expires_at: None,
     };
-    super::super::apply_ban(backends, &tracker_tx, &ban, Some(done_tx)).await;
+    super::super::apply_ban(backends, &tracker_tx, &ban, Some(done_tx), None).await;
     done_rx.await.expect("done channel dropped")
 }
 

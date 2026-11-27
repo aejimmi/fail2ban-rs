@@ -79,6 +79,23 @@ ban_count_decay = "30d"   # reset escalation count after 30 quiet days (default)
 
 An IP with no new ban within `ban_count_decay` has its escalation count dropped on the next sweep, so its next offense escalates from zero again — mirroring fail2ban's bantime-decay concept.
 
+### AbuseIPDB reporting
+
+Enable reporting per jail for filters that identify abuse covered by the [AbuseIPDB reporting policy](https://www.abuseipdb.com/reporting-policy). Store the API key in a private file (mode `0600` or `0400`) owned by root or the daemon user.
+
+```toml
+[global.abuseipdb]
+api_key_file = "/etc/fail2ban-rs/abuseipdb.key"
+
+[jail.sshd.abuseipdb]
+categories = [18, 22]
+description = "Repeated failed SSH authentication attempts on TCP port 22."
+```
+
+The daemon submits the public host IP, categories, configured description, and log timestamp when available. It reports only after a new automatic ban succeeds on nftables, iptables, or ipset. Describe the abuse in the configuration without personal data. Raw log lines stay local.
+
+One delivery attempt per IP is allowed every 30 minutes across all jails. Failures count, and a server rate limit can extend the cooldown. Reloads retain cooldowns and read the current key file. Restarting clears cooldowns. A full queue drops reports while firewall processing continues.
+
 ### Firewall backends
 
 **nftables** (default): Creates table `inet fail2ban-rs`, chain, and per-jail sets. Teardown on shutdown.

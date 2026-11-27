@@ -18,6 +18,7 @@ use tracing::{error, info};
 use restored::{Restored, open_state};
 use startup::{DaemonSignal, Signals};
 
+use crate::abuseipdb::{Policy, Reporter};
 use crate::config::{Config, JailConfig};
 use crate::control::{self, ControlCmd};
 use crate::detect::watcher::Failure;
@@ -34,6 +35,7 @@ use watchers::{Watchers, build_watcher_plan};
 pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<()> {
     info!(phase = "startup", "fail2ban-rs starting");
     let cancel = CancellationToken::new();
+    let _cancel_on_exit = cancel.clone().drop_guard();
     // Initialize remote logging (no-op if not configured).
     let logger = Logger::init(&config.logging);
     let restored = open_state(&config.global.state_dir).await?;
@@ -41,6 +43,7 @@ pub async fn run(config: Config, config_path: PathBuf) -> crate::error::Result<(
     let mut daemon = start_tasks(config, config_path, restored, logger, cancel).await?;
     info!(phase = "startup", "fail2ban-rs started");
     let result = daemon.serve().await;
+    daemon.reporter.stop();
 
     // Graceful shutdown: close Tell client, then let tasks drain.
     if let Some(t) = daemon.logger.take() {
@@ -63,10 +66,19 @@ async fn start_tasks(
     // Compile every watcher up front so a bad filter fails before any task
     // or firewall rule exists.
     let plan = build_watcher_plan(&config)?;
+    let reporter = Reporter::start(Policy::prepare(&config)?, cancel.child_token())?;
     let (failure_tx, failure_rx) = mpsc::channel::<Failure>(config.global.channel_size);
     let (tracker_cmd_tx, tracker_cmd_rx) = mpsc::channel::<TrackerCmd>(32);
     let tracker_io = (failure_rx, tracker_cmd_rx, tracker_cmd_tx.clone());
-    let executor_tx = start_core(&config, restored, tracker_io, logger.clone(), &cancel).await?;
+    let executor_tx = start_core(
+        &config,
+        restored,
+        tracker_io,
+        logger.clone(),
+        &cancel,
+        reporter.clone(),
+    )
+    .await?;
     // Watchers keep their own token and join handles, so a reload can hand
     // each jail's read position to its replacement.
     let watchers = Watchers::spawn(plan, &failure_tx, "startup", HashMap::new());
@@ -80,6 +92,7 @@ async fn start_tasks(
         control_rx,
         watchers,
         logger,
+        reporter,
         cancel,
     })
 }
@@ -99,11 +112,13 @@ async fn start_core(
     (failure_rx, cmd_rx, tracker_tx): TrackerIo,
     logger: Option<Logger>,
     cancel: &CancellationToken,
+    reporter: Reporter,
 ) -> crate::error::Result<mpsc::Sender<FirewallCmd>> {
     let (executor_tx, executor_rx) = mpsc::channel::<FirewallCmd>(config.global.channel_size);
     let jail_configs = enabled_jail_configs(config);
     let executor_io = (executor_rx, tracker_tx);
-    let active_bans = start_executor(&restored.bans, &jail_configs, executor_io, cancel).await?;
+    let active_bans =
+        start_executor(&restored.bans, &jail_configs, executor_io, cancel, reporter).await?;
     if let Some(t) = logger.as_ref() {
         t.log_startup(jail_configs.len(), active_bans.len());
     }
@@ -157,6 +172,7 @@ async fn start_executor(
     jail_configs: &HashMap<String, JailConfig>,
     (executor_rx, tracker_tx): ExecutorIo,
     cancel: &CancellationToken,
+    reporter: Reporter,
 ) -> crate::error::Result<Vec<BanRecord>> {
     let backends = enforce::create_backends(jail_configs)?;
     let now = chrono::Utc::now().timestamp();
@@ -168,11 +184,12 @@ async fn start_executor(
         "firewall bans restored"
     );
     let executor_cancel = cancel.child_token();
-    tokio::spawn(enforce::run(
+    tokio::spawn(enforce::run_with_reporter(
         executor_rx,
         backends,
         tracker_tx,
         executor_cancel,
+        Some(reporter),
     ));
     Ok(active_bans)
 }
@@ -192,6 +209,7 @@ struct Daemon {
     control_rx: mpsc::Receiver<ControlCmd>,
     watchers: Watchers,
     logger: Option<Logger>,
+    reporter: Reporter,
     cancel: CancellationToken,
 }
 
@@ -228,6 +246,7 @@ impl Daemon {
     /// their final reads), then cancel the remaining tasks.
     async fn shutdown(&mut self) {
         info!(phase = "shutdown", "fail2ban-rs stopping");
+        self.reporter.stop();
         let jails = self.config.enabled_jails().map(|(name, _)| name);
         teardown_firewalls_full(&self.executor_tx, jails, "shutdown").await;
         self.watchers.stop().await;
@@ -249,6 +268,7 @@ impl Daemon {
             &mut self.watchers,
             &self.failure_tx,
             self.logger.as_ref(),
+            Some(&self.reporter),
         )
         .await;
         match result {
@@ -273,6 +293,7 @@ impl Daemon {
             watchers: &mut self.watchers,
             failure_tx: &self.failure_tx,
             logger: self.logger.as_ref(),
+            reporter: Some(&self.reporter),
         };
         dispatch_control(ctrl, &self.tracker_cmd_tx, &mut ctx).await;
     }

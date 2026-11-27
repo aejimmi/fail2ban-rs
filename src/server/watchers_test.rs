@@ -220,6 +220,7 @@ async fn test_reload_config_failure_during_reload_observed_once() {
         &mut watchers,
         &failure_tx,
         None,
+        None,
     )
     .await
     .expect("reload should succeed");
@@ -253,6 +254,7 @@ async fn test_reload_config_parse_error_keeps_watchers_running() {
         &mut config,
         &mut watchers,
         &failure_tx,
+        None,
         None,
     )
     .await;

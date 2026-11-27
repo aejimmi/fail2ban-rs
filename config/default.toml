@@ -47,3 +47,11 @@ bantime_maxtime = "1w"
 # IPs/CIDRs to never ban
 ignoreip = ["127.0.0.1/8", "::1/128"]
 ignoreself = true
+
+# Optional AbuseIPDB reporting for new automatic bans.
+# [global.abuseipdb]
+# api_key_file = "/etc/fail2ban-rs/abuseipdb.key"
+#
+# [jail.sshd.abuseipdb]
+# categories = [18, 22]
+# description = "Repeated failed SSH authentication attempts on TCP port 22."

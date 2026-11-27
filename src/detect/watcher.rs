@@ -31,8 +31,10 @@ pub struct Failure {
     pub ip: IpAddr,
     /// Which jail detected it.
     pub jail_id: String,
-    /// Unix timestamp from the log line.
+    /// Unix timestamp used for threshold calculations.
     pub timestamp: i64,
+    /// Whether the timestamp was available in the log source.
+    pub timestamp_from_log: bool,
 }
 
 /// How long a cancelled watcher keeps forwarding already-read failures

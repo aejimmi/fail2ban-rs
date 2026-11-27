@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use tracing::{debug, warn};
@@ -70,6 +71,7 @@ fn parse_listing(listing: &str) -> HashSet<IpAddr> {
 
 /// Iptables backend — uses `iptables`/`ip6tables` resolved at startup.
 pub struct IptablesBackend {
+    attached: [AtomicBool; 2],
     iptables_path: PathBuf,
     ip6tables_path: PathBuf,
     /// Per-jail rule inputs from the last `init`, replayed by `teardown`.
@@ -80,6 +82,7 @@ impl IptablesBackend {
     /// Build a backend from resolved `iptables` and `ip6tables` paths.
     pub fn new(iptables_path: PathBuf, ip6tables_path: PathBuf) -> Self {
         Self {
+            attached: Default::default(),
             iptables_path,
             ip6tables_path,
             rules: Mutex::new(HashMap::new()),
@@ -191,6 +194,9 @@ impl IptablesBackend {
 #[async_trait::async_trait]
 impl FirewallBackend for IptablesBackend {
     async fn init(&self, jail: &str, ports: &[String], protocol: &str) -> Result<()> {
+        for attached in &self.attached {
+            attached.store(false, Ordering::Relaxed);
+        }
         let chain = chain_name(jail);
         let spec = RuleSpec {
             ports: ports.to_vec(),
@@ -204,6 +210,9 @@ impl FirewallBackend for IptablesBackend {
         }
         for (cmd, label, v6) in self.families() {
             let Err(e) = Self::init_family(cmd, label, &chain, &spec).await else {
+                if let Some(attached) = self.attached.get(usize::from(v6)) {
+                    attached.store(true, Ordering::Relaxed);
+                }
                 continue;
             };
             // IPv6 stays best-effort: hosts without IPv6 (no ip6tables
@@ -220,6 +229,9 @@ impl FirewallBackend for IptablesBackend {
     }
 
     async fn teardown(&self, jail: &str) -> Result<()> {
+        for attached in &self.attached {
+            attached.store(false, Ordering::Relaxed);
+        }
         let chain = chain_name(jail);
         let spec = self.take_rule_spec(jail);
         // The jump goes first: iptables refuses to delete a referenced chain.
@@ -267,6 +279,12 @@ impl FirewallBackend for IptablesBackend {
             all.extend(Self::list_chain(cmd, label, &chain).await?);
         }
         Ok(Some(all))
+    }
+
+    fn reportable(&self, ip: IpAddr) -> bool {
+        self.attached
+            .get(usize::from(ip.is_ipv6()))
+            .is_some_and(|attached| attached.load(Ordering::Relaxed))
     }
 
     fn name(&self) -> &'static str {
